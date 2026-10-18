@@ -1,0 +1,7 @@
+# Only the film and the photos it uses are published.
+รูปทั้งหมด/
+วิดีโอ/
+*.code-workspace
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,121 @@
+﻿# Builds photos-manifest.js — the list of images the film loads automatically.
+# Reads the photos only; original files are never renamed, modified or copied.
+# For each photo it also measures:
+#   sky    — blue sky above + soft mist below (helps choose the key-art image)
+#   lum    — overall brightness (helps find a night chapter)
+#   glints — the brightest small highlights (lamps, sun, sparkles of light),
+#            where the film hides tiny twinkling stars
+#
+#   powershell -ExecutionPolicy Bypass -File build-manifest.ps1
+#   powershell -ExecutionPolicy Bypass -File build-manifest.ps1 -Folder "other_folder"
+param([string]$Folder = "คัดแล้ว")
+
+Add-Type -AssemblyName System.Drawing
+$root = $PSScriptRoot
+$dir = Join-Path $root $Folder
+if (-not (Test-Path $dir)) { Write-Error "Folder not found: $dir"; exit 1 }
+
+# Natural sort: pad every run of digits so 2 < 10 < 101.
+$files = Get-ChildItem -LiteralPath $dir -File |
+  Where-Object { $_.Extension -match '^\.(jpe?g|png|webp)$' } |
+  Sort-Object { [regex]::Replace($_.Name, '\d+', { param($m) $m.Value.PadLeft(12, '0') }) }
+
+$esc = { param($s) '"' + ($s -replace '\\', '\\\\' -replace '"', '\"') + '"' }
+$inv = [Globalization.CultureInfo]::InvariantCulture
+$f4 = { param($v) ([double]$v).ToString('0.0000', $inv) }
+$names = @()
+$meta = @()
+
+foreach ($f in $files) {
+  $names += $f.Name
+  $sky = $null
+  try {
+    $img = [System.Drawing.Image]::FromFile($f.FullName)
+
+    # sky & brightness at 48x36
+    $bmp = New-Object System.Drawing.Bitmap($img, 48, 36)
+    $top = 0.0; $topN = 0; $bot = 0.0; $botN = 0; $lumAll = 0.0
+    for ($y = 0; $y -lt 36; $y++) {
+      for ($x = 0; $x -lt 48; $x++) {
+        $c = $bmp.GetPixel($x, $y)
+        $r = $c.R / 255.0; $g = $c.G / 255.0; $b = $c.B / 255.0
+        $l = 0.2126 * $r + 0.7152 * $g + 0.0722 * $b
+        $lumAll += $l
+        $mx = [Math]::Max($r, [Math]::Max($g, $b)); $mn = [Math]::Min($r, [Math]::Min($g, $b))
+        $s = if ($mx -gt 0) { ($mx - $mn) / $mx } else { 0 }
+        if ($y -lt 13) { $top += [Math]::Max(0, $b - ($r + $g) / 2) * 1.6 + $l * 0.4; $topN++ }
+        if ($y -ge 22) { $bot += $l * (1 - $s); $botN++ }
+      }
+    }
+    $bmp.Dispose()
+    $sky = $top / $topN + 0.8 * ($bot / $botN)
+    $lum = $lumAll / (48 * 36)
+
+    # glints at 96x72: bright local maxima that stand out from their surroundings
+    $GW = 96; $GH = 72
+    $bmp2 = New-Object System.Drawing.Bitmap($img, $GW, $GH)
+    $L = New-Object 'double[]' ($GW * $GH)
+    for ($y = 0; $y -lt $GH; $y++) {
+      for ($x = 0; $x -lt $GW; $x++) {
+        $c = $bmp2.GetPixel($x, $y)
+        $L[$y * $GW + $x] = (0.2126 * $c.R + 0.7152 * $c.G + 0.0722 * $c.B) / 255.0
+      }
+    }
+    $bmp2.Dispose()
+    $img.Dispose()
+    $S = New-Object 'double[]' (($GW + 1) * ($GH + 1))
+    for ($y = 1; $y -le $GH; $y++) {
+      $row = 0.0
+      for ($x = 1; $x -le $GW; $x++) {
+        $row += $L[($y - 1) * $GW + $x - 1]
+        $S[$y * ($GW + 1) + $x] = $S[($y - 1) * ($GW + 1) + $x] + $row
+      }
+    }
+    $night = $lum -lt 0.38
+    $minL = if ($night) { 0.62 } else { 0.88 }
+    $minC = if ($night) { 0.2 } else { 0.26 }
+    $maxN = if ($night) { 5 } else { 3 }
+    $R = 5
+    $cands = @()
+    for ($y = 1; $y -lt $GH - 1; $y++) {
+      for ($x = 1; $x -lt $GW - 1; $x++) {
+        $v = $L[$y * $GW + $x]
+        if ($v -lt $minL) { continue }
+        $isMax = $true
+        for ($dy = -1; $dy -le 1; $dy++) { for ($dx = -1; $dx -le 1; $dx++) {
+          if (($dx -ne 0 -or $dy -ne 0) -and $L[($y + $dy) * $GW + $x + $dx] -gt $v) { $isMax = $false }
+        } }
+        if (-not $isMax) { continue }
+        $x0 = [Math]::Max(0, $x - $R); $x1 = [Math]::Min($GW, $x + $R + 1)
+        $y0 = [Math]::Max(0, $y - $R); $y1 = [Math]::Min($GH, $y + $R + 1)
+        $sum = $S[$y1 * ($GW + 1) + $x1] - $S[$y0 * ($GW + 1) + $x1] - $S[$y1 * ($GW + 1) + $x0] + $S[$y0 * ($GW + 1) + $x0]
+        $con = $v - $sum / (($x1 - $x0) * ($y1 - $y0))
+        if ($con -lt $minC) { continue }
+        $cands += , @($x, $y, ($con * $v))
+      }
+    }
+    $cands = @($cands | Sort-Object { - $_[2] })
+    $pick = @()
+    foreach ($cd in $cands) {
+      $ok = $true
+      foreach ($pk in $pick) { if ([Math]::Abs($pk[0] - $cd[0]) + [Math]::Abs($pk[1] - $cd[1]) -lt 12) { $ok = $false } }
+      if ($ok) { $pick += , $cd }
+      if ($pick.Count -ge $maxN) { break }
+    }
+    $gl = ($pick | ForEach-Object {
+      $st = [Math]::Min(1.0, [Math]::Max(0.45, $_[2] * 3.0))
+      '[' + (& $f4 (($_[0] + 0.5) / $GW)) + ', ' + (& $f4 (($_[1] + 0.5) / $GH)) + ', ' + (& $f4 $st) + ']'
+    }) -join ', '
+  } catch { $sky = $null }
+  if ($null -ne $sky) {
+    $meta += '    ' + (& $esc $f.Name) + ': { "sky": ' + (& $f4 $sky) + ', "lum": ' + (& $f4 $lum) + ', "glints": [' + $gl + '] }'
+  }
+}
+
+$list = ($names | ForEach-Object { '    ' + (& $esc $_) }) -join ",`n"
+$metaJs = $meta -join ",`n"
+$js = "// Auto-generated by build-manifest.ps1 — $(Get-Date -Format s)`n" +
+      "window.PHOTO_MANIFEST = {`n  `"folder`": $(& $esc ($Folder -replace '\\', '/')),`n  `"files`": [`n$list`n  ],`n  `"meta`": {`n$metaJs`n  }`n};`n"
+
+[IO.File]::WriteAllText((Join-Path $root 'photos-manifest.js'), $js, (New-Object Text.UTF8Encoding($false)))
+Write-Host "photos-manifest.js - $($names.Count) images from $dir"

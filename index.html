@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d0b0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Above the Clouds — Khao Kho</title>
+  <meta name="description" content="A warm family travel film — Khao Kho, Phetchabun.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Mali:wght@400;500;600&family=Manrope:wght@300;400;500&family=Noto+Sans+Thai:wght@300;400&family=Noto+Serif+Thai:wght@300;400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- Sticker colours -->
+<svg class="defs" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="stkPink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd0dc"/><stop offset="1" stop-color="#f2809f"/></linearGradient>
+    <linearGradient id="stkGold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffeab0"/><stop offset="1" stop-color="#f0b24a"/></linearGradient>
+    <linearGradient id="stkSky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d6eeff"/><stop offset="1" stop-color="#7cbff0"/></linearGradient>
+  </defs>
+</svg>
+
+<div class="app" id="app">
+
+  <!-- ============================== FILM ============================== -->
+  <div class="stage" id="stage">
+    <div class="canvas-root" id="canvasRoot">
+      <div id="scenes"></div>
+      <div class="fx fx-glow" id="fxGlow"></div>
+      <div class="fx fx-rays" id="fxRays"></div>
+      <canvas class="fx fx-fog" id="fxFog"></canvas>
+      <div class="fx fx-fogcss" id="fxFogCss" hidden><div></div><div></div></div>
+      <canvas class="fx fx-particles" id="fxParticles"></canvas>
+      <div class="fx fx-leak" id="fxLeak"></div>
+      <div class="fx fx-bloom" id="fxBloom"></div>
+      <div class="fx fx-fade" id="fxFade"></div>
+      <div class="fx fx-grade" id="fxGrade"></div>
+      <div class="fx fx-vignette" id="fxVignette"></div>
+      <div class="fx fx-grain" id="fxGrain"></div>
+      <div class="titles" id="titles"></div>
+      <div class="fx fx-black" id="fxBlack"></div>
+      <div class="fx fx-white" id="fxWhite"></div>
+    </div>
+  </div>
+
+  <!-- play / pause feedback (appears only when you tap) -->
+  <div class="glyph" id="glyph" aria-hidden="true"></div>
+
+  <button class="sound-hint" id="soundHint" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 9.5h3.5L12 5v14l-4.5-4.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>
+    <span>แตะเพื่อเปิดเสียง</span>
+  </button>
+
+  <!-- ============================== EDIT SUITE (P / long-press) ============================== -->
+  <aside class="drawer" id="drawer" aria-label="Edit suite" aria-hidden="true">
+    <header class="drawer__head">
+      <div>
+        <div class="drawer__kicker">Edit Suite</div>
+        <h2>Above <em>the</em> Clouds</h2>
+        <p id="photoCount"></p>
+      </div>
+      <button class="icon-btn" id="btnCloseDrawer" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </header>
+
+    <div class="drawer__record">
+      <button class="btn btn--gold btn--block" id="btnRecord">
+        <span class="rec-dot"></span><span>บันทึกเป็นวิดีโอ · Record Film</span>
+      </button>
+      <p>บันทึกทั้งเรื่องตั้งแต่ต้นจนจบเป็นไฟล์วิดีโอ (MP4/WebM) — เลือก “แท็บนี้” และเปิด “แชร์เสียงของแท็บ” เมื่อเบราว์เซอร์ถาม · แนะนำให้กดเต็มจอก่อนเพื่อความคมชัดสูงสุด</p>
+    </div>
+
+    <div class="drawer__tools">
+      <button class="chip" id="btnMusic" title="Background music (MP3, WAV)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 18V5l11-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></svg>
+        <span class="label" id="musicLabel">Add Music</span>
+        <span class="x" id="musicRemove" hidden title="Remove music">×</span>
+      </button>
+      <button class="chip is-on" id="btnScore" title="Built-in piano score">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3.5" y="5" width="17" height="14" rx="1"/><path d="M8 5v8M12 5v8M16 5v8"/></svg>
+        <span class="label">Score · ดนตรีประกอบ</span>
+      </button>
+      <label class="volume" title="Volume">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 9.5h3.5L12 5v14l-4.5-4.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6"/></svg>
+        <input type="range" id="volume" min="0" max="100" value="80" aria-label="Volume">
+      </label>
+    </div>
+    <p class="drawer__hint">แตะภาพเพื่อข้ามไปช่วงนั้น · กดค้างแล้วลากเพื่อเรียงใหม่ (จะเปลี่ยนเป็นการตัดต่ออัตโนมัติ)<br>
+      แตะจอ = เล่น/หยุด · แตะสองครั้ง = เต็มจอ · กดค้าง = เปิดแผงนี้<br>
+      Space · ← → บท · F เต็มจอ · M เสียง · P แผงนี้</p>
+    <div class="drawer__list" id="gallery"></div>
+    <footer class="drawer__foot">
+      <button class="btn btn--small" id="btnResetOrder">Reset Edit</button>
+      <button class="btn btn--small" id="btnChangeFolder">Select Folder</button>
+    </footer>
+  </aside>
+
+  <!-- ============================== LOADER / FALLBACK ============================== -->
+  <div class="loader" id="loader">
+    <div class="loader__title">Above <em>the</em> Clouds</div>
+    <div class="loader__line"><span id="loaderBar"></span></div>
+    <div class="loader__status" id="loaderStatus">กำลังเตรียมภาพถ่าย…</div>
+    <div class="loader__fallback" id="loaderFallback" hidden>
+      <p>เบราว์เซอร์ไม่สามารถเปิดภาพจากโฟลเดอร์ได้โดยอัตโนมัติ<br>กรุณาเลือกโฟลเดอร์
+        <code></code></p>
+      <button class="btn btn--gold" id="btnSelectFolder">Select Folder</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</div>
+
+<input type="file" id="folderInput" webkitdirectory directory multiple accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp">
+<input type="file" id="musicInput" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav,audio/wave">
+
+<!-- photos-manifest.js: auto-generated list of ./คัดแล้ว (build-manifest.ps1 / .js)
+     film-edit.js: the curated edit, chapter by chapter -->
+<script src="photos-manifest.js"></script>
+<script src="film-edit.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
