@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200">
+<title>Above the Clouds — share card</title>
+<!-- The picture shown when the film's link is shared (LINE, Facebook, ...).
+     build-share-image.ps1 photographs this page into og-heart.jpg (1200×630)
+     and apple-touch-icon.png (#square). The heart is made of the album's own
+     photos; nothing is generated or altered. -->
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Mali:wght@500;600&family=Manrope:wght@500;600&family=Noto+Serif+Thai:wght@400&display=block" rel="stylesheet">
+<style>
+  :root { --cocoa: #4c3427; --cocoa-soft: #7b5c4a; --rose: #c95a7c; --gold: #b9884c; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; background: #fffaf3; }
+  .card {
+    position: relative; width: 1200px; height: 630px; overflow: hidden;
+    background:
+      radial-gradient(34% 52% at 10% 14%, rgba(253, 208, 222, 0.85), transparent 70%),
+      radial-gradient(32% 50% at 92% 88%, rgba(200, 226, 250, 0.85), transparent 70%),
+      radial-gradient(30% 44% at 90% 10%, rgba(253, 234, 182, 0.85), transparent 70%),
+      radial-gradient(30% 46% at 8% 92%, rgba(210, 238, 220, 0.75), transparent 70%),
+      radial-gradient(60% 80% at 50% 50%, #fffdf8 0%, #fff4ea 60%, #fbe7e1 100%);
+    font-family: "Manrope", sans-serif;
+  }
+  .glow { position: absolute; border-radius: 50%; background: radial-gradient(closest-side, rgba(255, 176, 198, 0.8), rgba(255, 220, 170, 0.4) 55%, transparent 78%); filter: blur(24px); }
+  .tile { position: absolute; border-radius: 9px; overflow: hidden; background: #fff; box-shadow: 0 0 0 2px #fff, 0 6px 14px -6px rgba(170, 90, 80, 0.45); }
+  .tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .bokeh { position: absolute; border-radius: 50%; }
+  .spark { position: absolute; width: 26px; height: 26px; }
+  .spark::before, .spark::after { content: ""; position: absolute; left: 50%; top: 0; width: 3px; height: 100%; margin-left: -1.5px; border-radius: 2px; background: linear-gradient(180deg, transparent, #f2c071 50%, transparent); }
+  .spark::after { transform: rotate(90deg); }
+  .sticker { position: absolute; filter: drop-shadow(0 6px 8px rgba(170, 90, 70, 0.28)); }
+  .left { position: absolute; left: 38px; top: 50%; transform: translateY(-50%); width: 262px; color: var(--cocoa); }
+  .eyebrow { font-weight: 600; font-size: 11px; letter-spacing: 0.36em; text-transform: uppercase; color: var(--gold); }
+  .name { font-family: "Cormorant Garamond", serif; font-weight: 500; font-size: 58px; line-height: 1; margin-top: 14px; }
+  .name em { font-style: italic; color: var(--rose); }
+  .rule { width: 70px; height: 2px; border-radius: 2px; background: #e3b874; margin: 20px 0 16px; }
+  .th { font-family: "Noto Serif Thai", serif; font-size: 18px; color: var(--cocoa-soft); }
+  .right { position: absolute; right: 38px; top: 50%; transform: translateY(-50%); width: 262px; text-align: right; color: var(--cocoa); }
+  .hand { font-family: "Mali", cursive; font-weight: 600; font-size: 42px; line-height: 1.3; color: var(--rose); }
+  .sub { font-family: "Mali", cursive; font-weight: 500; font-size: 20px; color: var(--cocoa-soft); margin-top: 6px; }
+  .play { display: inline-flex; align-items: center; gap: 10px; margin-top: 22px; padding: 11px 20px 11px 14px; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.82); box-shadow: 0 0 0 1.5px rgba(185, 136, 76, 0.55), 0 10px 22px -12px rgba(120, 70, 40, 0.5);
+    font-weight: 600; font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--cocoa); }
+  .play i { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(180deg, #f2a7bd, #d9688b); }
+  .play i::before { content: ""; margin-left: 3px; border-left: 10px solid #fff; border-top: 6.5px solid transparent; border-bottom: 6.5px solid transparent; }
+  /* #square: the heart alone, for the home-screen icon */
+  html.sq, body.sq, .sq .card { width: 512px; height: 512px; }
+</style>
+</head>
+<body>
+<div class="card" id="card"></div>
+<script src="photos-manifest.js"></script>
+<script src="film-edit.js"></script>
+<script>
+(() => {
+  const square = location.hash === '#square';
+  if (square) { document.documentElement.classList.add('sq'); document.body.classList.add('sq'); }
+  const CW = square ? 512 : 1200, CH = square ? 512 : 630;
+  const card = document.getElementById('card');
+  const M = window.PHOTO_MANIFEST || { files: [] }, EDIT = window.FILM_EDIT || {};
+  const folder = (M.folder || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  const url = n => (folder ? folder + '/' : '') + encodeURIComponent(n);
+  const numOf = n => { const m = /_(\d+)\.[a-z0-9]+$/i.exec(n); return m ? m[1] : n; };
+  const byNum = new Map(M.files.map(n => [numOf(n), n]));
+  const focus = EDIT.focus || {};
+
+  // photos in the order the film shows them: the key art first, then chapter by chapter
+  const film = [], seen = new Set();
+  const push = n => { const f = byNum.get(String(n)); if (f && !seen.has(f)) { seen.add(f); film.push(f); } };
+  push(EDIT.key);
+  (EDIT.chapters || []).forEach(ch => (ch.shots || []).forEach(s => (s.photos || []).forEach(push)));
+  M.files.forEach(f => { if (!seen.has(f)) { seen.add(f); film.push(f); } });
+
+  // the same parametric heart as the film
+  const HEART = [];
+  for (let i = 0; i < 240; i++) {
+    const t = (i / 240) * Math.PI * 2;
+    HEART.push([(16 * Math.pow(Math.sin(t), 3)) / 17, (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) / 17]);
+  }
+  const inside = (x, y) => {
+    let c = false;
+    for (let i = 0, j = HEART.length - 1; i < HEART.length; j = i++) {
+      const [xi, yi] = HEART[i], [xj, yj] = HEART[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  const grid = s => {
+    const pts = [], K = Math.ceil(1.2 / s) + 1;
+    for (let j = -K; j <= K; j++) for (let i = -K; i <= K; i++) { const x = i * s, y = -0.15 + j * s; if (inside(x, y)) pts.push([x, y]); }
+    return pts;
+  };
+  let lo = 0.04, hi = 0.6, pts = grid(lo);
+  for (let it = 0; it < 28; it++) { const s = (lo + hi) / 2, p = grid(s); if (p.length >= Math.max(film.length, 64)) { lo = s; pts = p; } else hi = s; }
+
+  const HS = square ? 430 : 530, hx = CW / 2, hy = CH / 2 + (square ? 6 : 4);
+  const unit = HS / 1.72, size = lo * unit * 0.9;
+  const glow = document.createElement('div');
+  glow.className = 'glow';
+  glow.style.cssText = `left:${hx - HS * 0.8}px;top:${hy - HS * 0.72}px;width:${HS * 1.6}px;height:${HS * 1.44}px`;
+  card.append(glow);
+
+  // soft bokeh and golden sparkles
+  const rnd = (() => { let s = 7; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
+  const tints = ['rgba(255,176,200,0.35)', 'rgba(255,206,150,0.35)', 'rgba(255,226,140,0.35)', 'rgba(190,220,250,0.35)'];
+  for (let i = 0; i < 16; i++) {
+    const b = document.createElement('div'), r = 16 + rnd() * 46;
+    b.className = 'bokeh';
+    b.style.cssText = `left:${rnd() * CW - r / 2}px;top:${rnd() * CH - r / 2}px;width:${r}px;height:${r}px;background:radial-gradient(closest-side, ${tints[i % 4]}, transparent)`;
+    card.append(b);
+  }
+
+  // tiles fill from the bottom tip, row by row; the key art sits at the centre
+  const tiles = pts.map(p => ({ x: hx + p[0] * unit, y: hy - (p[1] + 0.15) * unit }));
+  const rows = new Map();
+  tiles.forEach((t, i) => { const k = Math.round(t.y); if (!rows.has(k)) rows.set(k, []); rows.get(k).push(i); });
+  const fill = [];
+  [...rows.keys()].sort((a, b) => b - a).forEach((k, r) => { const row = rows.get(k).sort((a, b) => tiles[a].x - tiles[b].x); if (r % 2) row.reverse(); fill.push(...row); });
+  let keyTile = fill[0], best = Infinity;
+  tiles.forEach((t, i) => { const d = Math.hypot(t.x - hx, t.y - (hy - 0.05 * unit)); if (d < best) { best = d; keyTile = i; } });
+  const assign = new Array(tiles.length).fill(null);
+  assign[keyTile] = film[0];
+  const rest = fill.filter(i => i !== keyTile), m = film.length - 1;
+  for (let k = 0; k < m; k++) { const ti = rest[Math.min(rest.length - 1, Math.floor((k * rest.length) / Math.max(1, m)))]; if (!assign[ti]) assign[ti] = film[k + 1]; }
+  rest.forEach((ti, q) => { if (!assign[ti]) { const k = Math.round((q * m) / Math.max(1, rest.length)); assign[ti] = film[1 + ((k + Math.floor(m / 2)) % Math.max(1, m))] || film[0]; } });
+
+  tiles.forEach((t, i) => {
+    const el = document.createElement('div');
+    el.className = 'tile';
+    el.style.cssText = `left:${t.x - size / 2}px;top:${t.y - size / 2}px;width:${size}px;height:${size}px`;
+    const img = document.createElement('img');
+    img.src = url(assign[i]);
+    const f = focus[numOf(assign[i])] || [50, 42];
+    img.style.objectPosition = `${f[0]}% ${f[1]}%`;
+    el.append(img);
+    card.append(el);
+  });
+
+  const sticker = (svg, x, y, s, rot) => {
+    const el = document.createElement('div');
+    el.className = 'sticker';
+    el.style.cssText = `left:${x - s / 2}px;top:${y - s / 2}px;width:${s}px;height:${s}px;transform:rotate(${rot}deg)`;
+    el.innerHTML = `<svg viewBox="0 0 100 100" width="${s}" height="${s}"><defs>
+      <linearGradient id="p${x | 0}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd0dc"/><stop offset="1" stop-color="#f2809f"/></linearGradient>
+      <linearGradient id="g${x | 0}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffeab0"/><stop offset="1" stop-color="#f0b24a"/></linearGradient>
+      <linearGradient id="s${x | 0}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d6eeff"/><stop offset="1" stop-color="#7cbff0"/></linearGradient></defs>${svg(x | 0)}</svg>`;
+    card.append(el);
+  };
+  const HEARTS = id => `<path d="M50 88 C 24 70, 4 52, 12 30 C 19 13, 40 11, 50 29 C 60 11, 81 13, 88 30 C 96 52, 76 70, 50 88 Z" fill="url(#p${id})" stroke="#fff" stroke-width="7" stroke-linejoin="round"/><path d="M27 32 C 29 25, 35 21, 41 22" fill="none" stroke="rgba(255,255,255,.9)" stroke-width="6" stroke-linecap="round"/>`;
+  const STAR = id => `<path d="M50 6 L61 37 L94 38 L68 58 L78 91 L50 72 L22 91 L32 58 L6 38 L39 37 Z" fill="url(#g${id})" stroke="#fff" stroke-width="7" stroke-linejoin="round"/>`;
+  const CLOUD = id => `<path d="M24 74 C 8 74, 8 50, 26 50 C 26 32, 50 28, 56 44 C 62 32, 86 36, 84 54 C 98 56, 96 74, 80 74 Z" fill="url(#s${id})" stroke="#fff" stroke-width="7" stroke-linejoin="round"/>`;
+  sticker(HEARTS, hx + 0.78 * unit, hy - 0.86 * unit, square ? 74 : 86, 12);
+  sticker(STAR, hx - 1.0 * unit, hy - 0.42 * unit, square ? 54 : 62, -14);
+  sticker(CLOUD, hx + 0.66 * unit, hy + 0.66 * unit, square ? 62 : 72, 6);
+  [[0.08, 0.2], [0.95, 0.14], [0.28, 0.86], [0.7, 0.08], [0.06, 0.62], [0.97, 0.84]].forEach(([x, y]) => {
+    const s = document.createElement('div');
+    s.className = 'spark';
+    s.style.cssText = `left:${x * CW}px;top:${y * CH}px`;
+    card.append(s);
+  });
+
+  if (!square) {
+    const left = document.createElement('div');
+    left.className = 'left';
+    left.innerHTML = '<div class="eyebrow">A Khao Kho Family Film</div><div class="name">Above<br><em>the</em> Clouds</div><div class="rule"></div><div class="th">การเดินทางเหนือทะเลหมอก</div>';
+    const right = document.createElement('div');
+    right.className = 'right';
+    right.innerHTML = '<div class="hand">ครอบครัว<br>ของเรา ♡</div><div class="sub">ทริปเขาค้อ · เพชรบูรณ์</div><div class="play"><i></i>ดูภาพยนตร์ · Play</div>';
+    card.append(left, right);
+  }
+})();
+</script>
+</body>
+</html>
