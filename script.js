@@ -1,32 +1,45 @@
 /* ==========================================================================
    ABOVE THE CLOUDS — a warm family film
    --------------------------------------------------------------------------
-   The curated edit (film-edit.js, written after looking at every photo)
-   cuts the album into a film: a trailer-style cold open, chapters that
-   follow the trip, soft photographic compositions — dreamy heroes whose
-   edges melt into their own colours, epic landscapes, soft photo cards,
-   scrapbook polaroids, collages — dressed with handwriting, doodles,
-   stickers, fairy dust and tiny stars hidden on the lights of night
-   photographs, and a finale where every photograph flies in to form a heart.
-   Photos the edit doesn't name are cut automatically.
+   A heart made of every photograph is the home of the film. After a bright,
+   trailer-style cold open (every photo shown whole), all the photos fly in
+   to form the heart. Then, one shot at a time, a tile glows and opens up
+   into a full composition — dreamy heroes, landscapes, soft photo cards,
+   scrapbook polaroids, collages, with handwriting, doodles, stickers, fairy
+   dust and hidden sparkles — and afterwards returns to the heart, each time
+   a little differently: folding home on a curve, spinning in, dissolving
+   into stardust, or scattering into small tiles that swirl back into place.
+   A tile turns from pale to full colour once its moment has been shown; at
+   the finale the whole heart glows. Everything stays light and airy.
+   The curated edit (film-edit.js) was written after looking at every photo.
 
    Every frame is a pure function of film time `t`, so pause, seek, loop,
    score and recording stay exact. The canvas is 1080 px on its short side
-   and takes the screen's shape (desktop, iPad, phone; landscape or portrait).
-   There is no control bar: tap = play/pause, double-tap = fullscreen,
+   and takes the screen's shape. It is scaled with CSS zoom, so phones draw
+   layers at their on-screen size, and only the shots around the playhead
+   exist in the page, so memory stays flat however long the film plays.
+   No control bar: tap = play/pause, double-tap = fullscreen,
    long-press (or P) = edit suite.
    ========================================================================== */
 (() => {
   'use strict';
 
   /* ---------------------------------------------------------------------
-     Geometry
+     Geometry & device
      --------------------------------------------------------------------- */
   const BASE = 1080;
   let W = 1920, H = 1080, PORT = false;
   const IMG_RE = /\.(jpe?g|png|webp)$/i;
   const FOLDER_HINT = 'C:\\Users\\USER\\Desktop\\เที่ยวเขาค้อ\\คัดแล้ว';
   const SVGNS = 'http://www.w3.org/2000/svg';
+  // Phones and tablets: no duplicate glow layers, no blend-mode grading layers,
+  // fewer particles — friendly to mobile memory and GPUs.
+  const LITE = !!((window.matchMedia && matchMedia('(pointer: coarse)').matches) || Math.min(screen.width, screen.height) <= 820);
+  // CSS zoom lays the canvas out at its on-screen size (a transform-scaled
+  // canvas is rasterised at full size × device pixel ratio, too big for phones).
+  const ZOOM_OK = !!(window.CSS && CSS.supports && CSS.supports('zoom', '0.5'));
+  const CLIP = window.CSS && CSS.supports && !CSS.supports('clip-path', 'inset(1px)') && CSS.supports('-webkit-clip-path', 'inset(1px)') ? 'webkitClipPath' : 'clipPath';
+  document.documentElement.classList.toggle('lite', LITE);
 
   /* ---------------------------------------------------------------------
      Math & easing
@@ -49,12 +62,12 @@
   const fmt = s => { s = Math.max(0, Math.floor(s + 1e-4)); return pad2(Math.floor(s / 60)) + ':' + pad2(s % 60); };
   const ratioOf = p => p.w / p.h;
   const fitIn = (r, mw, mh) => { let w = mw, hh = w / r; if (hh > mh) { hh = mh; w = hh * r; } return { w, h: hh }; };
-  const gcd = (a, b) => (b ? gcd(b, a % b) : a);
   const rng = seed => { let s = (Math.abs(Math.floor(seed)) % 2147483646) + 1; return () => (s = (s * 16807) % 2147483647) / 2147483647; };
   const bez = (P, t) => {
     const u = 1 - t, a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
     return [a * P[0][0] + b * P[1][0] + c * P[2][0] + d * P[3][0], a * P[0][1] + b * P[1][1] + c * P[2][1] + d * P[3][1]];
   };
+  const isDark = p => typeof p.lum === 'number' && p.lum < 0.38;
 
   /* ---------------------------------------------------------------------
      DOM helpers
@@ -72,15 +85,9 @@
     c[prop] = val;
     el.style[prop] = val;
   };
-  const setMask = (el, val) => {
-    const c = el._c || (el._c = {});
-    if (c.mask === val) return;
-    c.mask = val;
-    el.style.webkitMaskImage = val;
-    el.style.maskImage = val;
-  };
   const show = (el, on) => css(el, 'visibility', on ? 'visible' : 'hidden');
   const op = (el, v) => css(el, 'opacity', String(r4(clamp(v))));
+  const layer = (parent, cls) => { const l = h('div', 'layer' + (cls ? ' ' + cls : '')); parent.append(l); return l; };
   const imgEl = (photo, cls) => {
     const i = h('img', cls);
     i.src = photo.url; i.alt = ''; i.draggable = false; i.decoding = 'sync';
@@ -110,7 +117,6 @@
   const COPY = {
     card1: { en: 'Some journeys', th: 'บางการเดินทาง' },
     card2: { en: 'aren\u2019t measured in miles', th: 'ไม่ได้วัดกันที่ระยะทาง' },
-    end: { en: 'Until the mist calls us back.', th: 'จนกว่าสายหมอกจะเรียกเรากลับมา' },
     heart: 'ครอบครัวของเรา',
     thanks: 'ขอบคุณที่เป็นครอบครัวของกันและกัน',
   };
@@ -153,7 +159,7 @@
     t: 0, playing: false, baseT: 0, baseNow: 0, dirty: true, ready: false,
     items: [], scenes: [], starts: [], durs: [], total: 1, groups: [],
     scoreStart: 0, cues: [], lastItem: -1, photoItem: [], keyPos: -1, seq: [],
-    objectUrls: [], warmed: new Set(), recording: null,
+    heart: null, px: 1, objectUrls: [], warmed: new Set(), recording: null,
   };
 
   /* =====================================================================
@@ -190,7 +196,7 @@
       float dens = smoothstep(0.32, 0.9, f);
       float low = mix(1.0, smoothstep(1.0, 0.0, uv.y) * 1.35, uLow);
       float a = clamp(dens * low * uAmount, 0.0, 0.9);
-      vec3 col = mix(vec3(0.96, 0.96, 0.98), vec3(1.0, 0.95, 0.88), uWarm);
+      vec3 col = mix(vec3(0.97, 0.97, 0.99), vec3(1.0, 0.96, 0.9), uWarm);
       gl_FragColor = vec4(col * a, a);
     }`;
   class FogRenderer {
@@ -230,14 +236,15 @@
       this.canvas.style.width = W + 'px';
       this.canvas.style.height = H + 'px';
       if (!this.ok) return;
-      this.canvas.width = Math.round(W * 0.4);
-      this.canvas.height = Math.round(H * 0.4);
+      const q = LITE ? 0.26 : 0.4;
+      this.canvas.width = Math.round(W * q);
+      this.canvas.height = Math.round(H * q);
       this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     }
     draw(time, p) {
       if (!this.ok) return;
       const on = p.amount > 0.004;
-      if (on !== this.visible) { this.canvas.style.opacity = on ? '1' : '0'; this.visible = on; }
+      if (on !== this.visible) { this.canvas.style.display = on ? 'block' : 'none'; this.visible = on; }
       if (!on) return;
       const gl = this.gl, u = this.u;
       gl.clearColor(0, 0, 0, 0);
@@ -252,7 +259,8 @@
   }
 
   /* =====================================================================
-     PARTICLES — warm bokeh, drifting petals, fireflies and twinkling stars
+     PARTICLES — pastel bokeh, drifting petals, fireflies, golden twinkles
+     and streams of stardust flowing into the heart
      ===================================================================== */
   class Particles {
     constructor(canvas) {
@@ -270,65 +278,73 @@
         return s;
       };
       this.bokehS = [
-        radial([[0, 'rgba(255,246,230,0.95)'], [0.45, 'rgba(255,214,170,0.4)'], [0.75, 'rgba(255,200,150,0.1)'], [1, 'rgba(255,200,150,0)']]),
-        radial([[0, 'rgba(255,240,246,0.95)'], [0.45, 'rgba(255,176,200,0.38)'], [0.75, 'rgba(255,150,180,0.1)'], [1, 'rgba(255,150,180,0)']]),
-        radial([[0, 'rgba(255,252,236,0.95)'], [0.45, 'rgba(255,232,160,0.4)'], [0.75, 'rgba(255,220,140,0.1)'], [1, 'rgba(255,220,140,0)']]),
+        radial([[0, 'rgba(255,232,240,0.8)'], [0.5, 'rgba(255,176,200,0.4)'], [0.8, 'rgba(255,170,196,0.12)'], [1, 'rgba(255,170,196,0)']]),
+        radial([[0, 'rgba(255,242,226,0.8)'], [0.5, 'rgba(255,196,150,0.4)'], [0.8, 'rgba(255,188,140,0.12)'], [1, 'rgba(255,188,140,0)']]),
+        radial([[0, 'rgba(255,250,224,0.8)'], [0.5, 'rgba(255,220,140,0.4)'], [0.8, 'rgba(255,212,128,0.12)'], [1, 'rgba(255,212,128,0)']]),
       ];
       this.flyS = radial([[0, 'rgba(255,255,236,1)'], [0.2, 'rgba(255,232,150,0.85)'], [0.55, 'rgba(255,200,90,0.2)'], [1, 'rgba(255,190,80,0)']], 64);
+      this.goldS = radial([[0, 'rgba(255,255,246,1)'], [0.22, 'rgba(255,218,140,0.95)'], [0.55, 'rgba(244,164,128,0.35)'], [1, 'rgba(244,164,128,0)']], 64);
       const pc = document.createElement('canvas');
       pc.width = 64; pc.height = 40;
       const pg = pc.getContext('2d');
       const pgr = pg.createLinearGradient(0, 0, 64, 40);
-      pgr.addColorStop(0, 'rgba(255,240,246,0.98)'); pgr.addColorStop(0.55, 'rgba(255,186,206,0.95)'); pgr.addColorStop(1, 'rgba(243,146,178,0.9)');
+      pgr.addColorStop(0, 'rgba(255,236,244,0.98)'); pgr.addColorStop(0.55, 'rgba(255,180,202,0.95)'); pgr.addColorStop(1, 'rgba(240,140,172,0.9)');
       pg.fillStyle = pgr;
       pg.beginPath(); pg.moveTo(4, 20); pg.bezierCurveTo(14, 0, 46, 0, 60, 16); pg.lineTo(52, 20); pg.lineTo(60, 24); pg.bezierCurveTo(46, 40, 14, 40, 4, 20); pg.fill();
       this.petalS = pc;
+      // golden twinkle: visible on light backgrounds and on photographs alike
       const tc = document.createElement('canvas');
       tc.width = tc.height = 64;
       const tg = tc.getContext('2d');
       const tr = tg.createRadialGradient(32, 32, 0, 32, 32, 32);
-      tr.addColorStop(0, 'rgba(255,255,250,1)'); tr.addColorStop(0.18, 'rgba(255,240,200,0.6)'); tr.addColorStop(1, 'rgba(255,230,180,0)');
+      tr.addColorStop(0, 'rgba(255,255,248,1)'); tr.addColorStop(0.16, 'rgba(255,224,150,0.9)'); tr.addColorStop(0.45, 'rgba(240,176,96,0.24)'); tr.addColorStop(1, 'rgba(240,176,96,0)');
       tg.fillStyle = tr; tg.fillRect(0, 0, 64, 64);
       const lh = tg.createLinearGradient(0, 0, 64, 0);
-      lh.addColorStop(0, 'rgba(255,248,230,0)'); lh.addColorStop(0.5, 'rgba(255,255,255,1)'); lh.addColorStop(1, 'rgba(255,248,230,0)');
-      tg.fillStyle = lh; tg.fillRect(0, 31, 64, 2);
+      lh.addColorStop(0, 'rgba(236,168,80,0)'); lh.addColorStop(0.5, 'rgba(255,240,200,1)'); lh.addColorStop(1, 'rgba(236,168,80,0)');
+      tg.fillStyle = lh; tg.fillRect(0, 30.5, 64, 3);
       const lv = tg.createLinearGradient(0, 0, 0, 64);
-      lv.addColorStop(0, 'rgba(255,248,230,0)'); lv.addColorStop(0.5, 'rgba(255,255,255,1)'); lv.addColorStop(1, 'rgba(255,248,230,0)');
-      tg.fillStyle = lv; tg.fillRect(31, 0, 2, 64);
+      lv.addColorStop(0, 'rgba(236,168,80,0)'); lv.addColorStop(0.5, 'rgba(255,240,200,1)'); lv.addColorStop(1, 'rgba(236,168,80,0)');
+      tg.fillStyle = lv; tg.fillRect(30.5, 0, 3, 64);
       this.starS = tc;
-      const rnd = rng(17);
-      this.bokeh = Array.from({ length: 40 }, () => ({ x: rnd(), y: rnd(), vx: (rnd() - 0.5) * 0.01, vy: 0.005 + rnd() * 0.012, r: 14 + Math.pow(rnd(), 2) * 70, a: 0.25 + rnd() * 0.55, tw: 0.4 + rnd() * 1.2, ph: rnd() * 6.28 }));
-      this.petals = Array.from({ length: 28 }, () => ({ x: rnd(), y: rnd() * 1.1, vx: 0.012 + rnd() * 0.02, vy: 0.028 + rnd() * 0.04, s: 22 + rnd() * 26, spin: 0.5 + rnd() * 1.4, rot: rnd() * 6.28, f: 0.5 + rnd(), ph: rnd() * 6.28, a: 0.55 + rnd() * 0.4 }));
-      this.flies = Array.from({ length: 46 }, () => ({ x: rnd(), y: 0.12 + rnd() * 0.82, f1: 0.15 + rnd() * 0.35, f2: 0.12 + rnd() * 0.3, ph: rnd() * 6.28, s: 8 + rnd() * 18, tw: 0.8 + rnd() * 2 }));
-      this.stars = Array.from({ length: 30 }, () => ({ x: rnd(), y: rnd() * 0.9, s: 16 + rnd() * 28, f: 0.35 + rnd() * 0.5, ph: rnd() * 6.28 }));
+      const rnd = rng(17), k = LITE ? 0.55 : 1, n = v => Math.round(v * k);
+      this.bokeh = Array.from({ length: n(40) }, () => ({ x: rnd(), y: rnd(), vx: (rnd() - 0.5) * 0.01, vy: 0.005 + rnd() * 0.012, r: 14 + Math.pow(rnd(), 2) * 70, a: 0.25 + rnd() * 0.55, tw: 0.4 + rnd() * 1.2, ph: rnd() * 6.28 }));
+      this.petals = Array.from({ length: n(28) }, () => ({ x: rnd(), y: rnd() * 1.1, vx: 0.012 + rnd() * 0.02, vy: 0.028 + rnd() * 0.04, s: 22 + rnd() * 26, spin: 0.5 + rnd() * 1.4, rot: rnd() * 6.28, f: 0.5 + rnd(), ph: rnd() * 6.28, a: 0.55 + rnd() * 0.4 }));
+      this.flies = Array.from({ length: n(46) }, () => ({ x: rnd(), y: 0.12 + rnd() * 0.82, f1: 0.15 + rnd() * 0.35, f2: 0.12 + rnd() * 0.3, ph: rnd() * 6.28, s: 8 + rnd() * 18, tw: 0.8 + rnd() * 2 }));
+      this.stars = Array.from({ length: n(30) }, () => ({ x: rnd(), y: rnd() * 0.9, s: 16 + rnd() * 28, f: 0.35 + rnd() * 0.5, ph: rnd() * 6.28 }));
+      this.sp = null;
     }
     resize() {
-      this.canvas.width = Math.round(W * 0.5);
-      this.canvas.height = Math.round(H * 0.5);
+      const q = LITE ? 0.3 : 0.5;
+      this.canvas.width = Math.round(W * q);
+      this.canvas.height = Math.round(H * q);
       this.canvas.style.width = W + 'px';
       this.canvas.style.height = H + 'px';
     }
-    draw(t, f) {
-      const any = f.bokeh > 0.004 || f.petals > 0.004 || f.flies > 0.004 || f.stars > 0.004;
-      if (any !== this.on) { this.canvas.style.opacity = any ? '1' : '0'; this.on = any; }
+    streamPts(seed, n) {
+      const key = seed + ':' + n;
+      if (this.sp && this.sp.key === key) return this.sp.pts;
+      const rnd = rng(seed * 977 + n);
+      const pts = Array.from({ length: n }, () => {
+        const d = rnd() * 0.4;
+        return { x: 0.06 + rnd() * 0.88, y: 0.06 + rnd() * 0.88, d, len: (1 - d) * (0.72 + rnd() * 0.28), curl: (rnd() - 0.5) * 0.9, s: 16 + rnd() * 30 };
+      });
+      this.sp = { key, pts };
+      return pts;
+    }
+    draw(t, f, streams) {
+      const any = f.bokeh > 0.004 || f.petals > 0.004 || f.flies > 0.004 || f.stars > 0.004 || (streams && streams.length > 0);
+      if (any !== this.on) { this.canvas.style.display = any ? 'block' : 'none'; this.on = any; }
+      if (!any) return;
       const c = this.ctx, cw = this.canvas.width, ch = this.canvas.height;
       c.clearRect(0, 0, cw, ch);
-      if (!any) return;
       const unit = Math.min(cw, ch) / 540;
-      c.globalCompositeOperation = 'lighter';
+      c.globalCompositeOperation = 'source-over';
       if (f.bokeh > 0.004) this.bokeh.forEach((p, i) => {
         const x = ((((p.x + p.vx * t) % 1) + 1) % 1) * cw;
         const y = ((((p.y - p.vy * t) % 1) + 1) % 1) * ch + Math.sin(t * 0.5 + p.ph) * 8 * unit;
         const s = p.r * unit;
         c.globalAlpha = clamp(f.bokeh * p.a * (0.55 + 0.45 * Math.sin(t * p.tw + p.ph)));
         c.drawImage(this.bokehS[i % 3], x - s / 2, y - s / 2, s, s);
-      });
-      if (f.flies > 0.004) this.flies.forEach(p => {
-        const x = (p.x + Math.sin(t * p.f1 + p.ph) * 0.05) * cw;
-        const y = (p.y + Math.cos(t * p.f2 + p.ph * 1.3) * 0.04) * ch;
-        const s = p.s * unit;
-        c.globalAlpha = clamp(f.flies * (0.3 + 0.7 * Math.pow(0.5 + 0.5 * Math.sin(t * p.tw + p.ph), 2)));
-        c.drawImage(this.flyS, x - s / 2, y - s / 2, s, s);
       });
       if (f.stars > 0.004) this.stars.forEach(p => {
         const k = Math.pow(Math.max(0, Math.sin(t * p.f * 2 + p.ph)), 8);
@@ -337,7 +353,6 @@
         c.globalAlpha = clamp(f.stars * k);
         c.drawImage(this.starS, p.x * cw - s / 2, p.y * ch - s / 2, s, s);
       });
-      c.globalCompositeOperation = 'source-over';
       if (f.petals > 0.004) this.petals.forEach(p => {
         const x = ((((p.x + p.vx * t + Math.sin(t * p.f + p.ph) * 0.03) % 1) + 1) % 1) * cw;
         const y = (((((p.y + p.vy * t) % 1.1) + 1.1) % 1.1) - 0.05) * ch;
@@ -350,6 +365,33 @@
         c.drawImage(this.petalS, -s / 2, -s * 0.31, s, s * 0.62);
         c.restore();
       });
+      if (streams && streams.length) {
+        const qx = cw / W, qy = ch / H;
+        streams.forEach(st => {
+          this.streamPts(st.seed, st.n).forEach(p => {
+            const k = ramp(st.k, p.d, p.d + p.len);
+            if (k <= 0 || k >= 1) return;
+            const e = E.inOutCubic(k), ie = 1 - e;
+            const sx = p.x * W, sy = p.y * H;
+            const mx = (sx + st.tx) / 2 + (st.ty - sy) * p.curl, my = (sy + st.ty) / 2 + (sx - st.tx) * p.curl;
+            const x = ie * ie * sx + 2 * ie * e * mx + e * e * st.tx, y = ie * ie * sy + 2 * ie * e * my + e * e * st.ty;
+            const s = p.s * (1 - 0.55 * e) * unit;
+            c.globalAlpha = clamp(Math.sin(Math.PI * k) * st.a);
+            c.drawImage(this.goldS, x * qx - s / 2, y * qy - s / 2, s, s);
+          });
+        });
+      }
+      if (f.flies > 0.004) {
+        c.globalCompositeOperation = 'lighter';
+        this.flies.forEach(p => {
+          const x = (p.x + Math.sin(t * p.f1 + p.ph) * 0.05) * cw;
+          const y = (p.y + Math.cos(t * p.f2 + p.ph * 1.3) * 0.04) * ch;
+          const s = p.s * unit;
+          c.globalAlpha = clamp(f.flies * (0.3 + 0.7 * Math.pow(0.5 + 0.5 * Math.sin(t * p.tw + p.ph), 2)));
+          c.drawImage(this.flyS, x - s / 2, y - s / 2, s, s);
+        });
+        c.globalCompositeOperation = 'source-over';
+      }
       c.globalAlpha = 1;
     }
   }
@@ -459,6 +501,78 @@
     });
   }
 
+  // Small copies (200 px) of every photograph, made two at a time and decoded
+  // off the main thread: the heart's tiles and the soft colour fields are drawn
+  // from these, so they cost almost no memory.
+  const thumbs = new Map(), thumbWait = new Map(), thumbQ = [];
+  let thumbBusy = 0;
+  function thumbOf(photo) {
+    if (thumbs.has(photo.url)) return Promise.resolve(thumbs.get(photo.url));
+    if (thumbWait.has(photo.url)) return thumbWait.get(photo.url).pr;
+    let resolve;
+    const pr = new Promise(r => { resolve = r; });
+    thumbWait.set(photo.url, { pr, resolve });
+    thumbQ.push(photo);
+    pumpThumbs();
+    return pr;
+  }
+  function pumpThumbs() {
+    while (thumbBusy < 2 && thumbQ.length) {
+      const photo = thumbQ.shift();
+      thumbBusy++;
+      makeThumb(photo).then(cv => {
+        thumbBusy--;
+        const w = thumbWait.get(photo.url);
+        thumbWait.delete(photo.url);
+        if (cv) thumbs.set(photo.url, cv);
+        if (w) w.resolve(cv);
+        pumpThumbs();
+      });
+    }
+  }
+  function makeThumb(photo) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        const done = () => {
+          const r = img.naturalWidth / img.naturalHeight, L = 200;
+          const c = document.createElement('canvas');
+          c.width = r >= 1 ? L : Math.max(8, Math.round(L * r));
+          c.height = r >= 1 ? Math.max(8, Math.round(L / r)) : L;
+          const g = c.getContext('2d');
+          g.imageSmoothingQuality = 'high';
+          try { g.drawImage(img, 0, 0, c.width, c.height); } catch (e) { /* keep the blank */ }
+          resolve(c);
+        };
+        if (img.decode) img.decode().then(done, done); else done();
+      };
+      img.onerror = () => resolve(null);
+      img.src = photo.url;
+    });
+  }
+  // A tiny, very soft copy of a photograph (two bilinear steps make the blur).
+  function fieldCanvas(photo, cls) {
+    const c = document.createElement('canvas');
+    c.className = cls;
+    c.width = 4; c.height = 3;
+    thumbOf(photo).then(th => {
+      if (!th) return;
+      const r = th.width / th.height;
+      const sw = r >= 1 ? 28 : Math.max(4, Math.round(28 * r)), sh = r >= 1 ? Math.max(4, Math.round(28 / r)) : 28;
+      const tiny = document.createElement('canvas');
+      tiny.width = sw; tiny.height = sh;
+      const tg = tiny.getContext('2d');
+      tg.imageSmoothingQuality = 'high';
+      tg.drawImage(th, 0, 0, sw, sh);
+      c.width = sw * 4; c.height = sh * 4;
+      const g = c.getContext('2d');
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(tiny, 0, 0, c.width, c.height);
+    });
+    return c;
+  }
+
   async function pickFolder() {
     if (window.showDirectoryPicker) {
       try {
@@ -495,6 +609,9 @@
     if (!state.ready) start(); else toast(`โหลดภาพแล้ว ${photos.length} ภาพ`);
   }
   function usePhotos(photos, label) {
+    thumbs.clear();
+    thumbWait.clear();
+    thumbQ.length = 0;
     state.photos = photos;
     state.order = photos.slice();
     state.sourceLabel = label;
@@ -509,7 +626,7 @@
 
   // Tiny stars that twinkle on the lights of night photographs (placed in image space).
   function glintLayer(photo, parent, bw, bh, focus) {
-    if (!photo.glints || !photo.glints.length || !(photo.lum < 0.38)) return null;
+    if (!photo.glints || !photo.glints.length || !isDark(photo)) return null;
     const s = Math.max(bw / photo.w, bh / photo.h), dw = photo.w * s, dh = photo.h * s;
     const ox = (bw - dw) * (focus ? focus[0] / 100 : 0.5), oy = (bh - dh) * (focus ? focus[1] / 100 : 0.5);
     const base = Math.min(bw, bh);
@@ -534,7 +651,7 @@
     });
   }
 
-  // A photograph in a box (full frame by default) with an inner layer for the camera.
+  // A photograph across the whole screen, with an inner layer for the camera.
   function photoBox(photo, parent, rect, cls, glow) {
     const r = rect || { x: 0, y: 0, w: W, h: H };
     const box = h('div', 'pb' + (cls ? ' ' + cls : ''));
@@ -544,55 +661,58 @@
     const im = imgEl(photo);
     im.style.objectPosition = pos;
     kb.append(im);
-    if (glow) { const g = imgEl(photo, 'ph-glow'); g.style.objectPosition = pos; kb.append(g); }
+    if (glow && !LITE) { const g = imgEl(photo, 'ph-glow'); g.style.objectPosition = pos; kb.append(g); }
     const gl = glintLayer(photo, kb, r.w, r.h, f);
     box.append(kb);
     parent.append(box);
-    return { box, kb, w: r.w, h: r.h, gl };
+    return { box, kb, img: im, w: r.w, h: r.h, gl, focus: f };
   }
-  // The same photograph, softly blurred, as the colour field behind a composition.
+  // The same photograph, softly out of focus, as the colour field behind a composition.
   function fieldOf(photo, parent) {
-    const f = h('div', 'field');
-    f.append(imgEl(photo), h('div', 'field__tone'));
+    const f = h('div', 'field' + (isDark(photo) ? ' field--lift' : ''));
+    f.append(fieldCanvas(photo, 'field__mini'), h('div', 'field__tone'));
     parent.append(f);
     return f;
   }
   const shade = (parent, kind) => { const s = h('div', 'shade shade--' + kind); parent.append(s); return s; };
 
-  // Dream: the whole photograph, its edges melting into its own colours.
+  // Dream: the whole photo, its edges melting into its own colours.
   function dreamPhoto(photo, parent, rect, cls) {
     const box = h('div', 'dream' + (cls ? ' ' + cls : ''));
     box.style.cssText = `left:${r2(rect.x)}px;top:${r2(rect.y)}px;width:${r2(rect.w)}px;height:${r2(rect.h)}px`;
     const inner = h('div', 'dream__in');
     const kb = h('div', 'kb');
-    kb.append(imgEl(photo), imgEl(photo, 'ph-glow'));
+    const im = imgEl(photo);
+    kb.append(im);
+    if (!LITE) kb.append(imgEl(photo, 'ph-glow'));
     const gl = glintLayer(photo, kb, rect.w, rect.h, null);
     inner.append(kb);
     box.append(inner);
     parent.append(box);
-    return { box, kb, w: rect.w, h: rect.h, gl };
+    return { box, kb, img: im, w: rect.w, h: rect.h, gl, bs: 1 };
   }
-  // Landscape screens: full-bleed. Portrait screens: a dream band over the colour field.
+  // A hero photograph shown whole over its colour field.
   function heroPhoto(p, root, cls) {
-    if (!PORT) return { pb: photoBox(p, root, null, cls, true), field: null };
     const field = fieldOf(p, root);
-    const box = fitIn(ratioOf(p), W * 0.98, H * 0.62);
-    return { pb: dreamPhoto(p, root, { x: (W - box.w) / 2, y: H * 0.44 - box.h / 2, w: box.w, h: box.h }, cls), field };
+    const box = PORT ? fitIn(ratioOf(p), W * 0.98, H * 0.62) : fitIn(ratioOf(p), W * 0.92, H * 0.92);
+    const cy = PORT ? H * 0.44 : H * 0.5;
+    return { pb: dreamPhoto(p, root, { x: (W - box.w) / 2, y: cy - box.h / 2, w: box.w, h: box.h }, cls), field };
   }
   // Soft card: rounded corners, a soft shadow and an aura of the photo's own colours.
   function softCard(photo, parent, rect, o = {}) {
     const el = h('div', 'sc' + (o.cls ? ' ' + o.cls : ''));
     el.style.cssText = `left:${r2(rect.x)}px;top:${r2(rect.y)}px;width:${r2(rect.w)}px;height:${r2(rect.h)}px`;
-    if (o.aura) { const a = h('div', 'sc__aura'); a.append(imgEl(photo)); el.append(a); }
+    if (o.aura && !LITE) { const a = h('div', 'sc__aura'); a.append(fieldCanvas(photo, '')); el.append(a); }
     const clip = h('div', 'sc__clip');
     const kb = h('div', 'kb');
-    kb.append(imgEl(photo));
+    const im = imgEl(photo);
+    kb.append(im);
     const gl = glintLayer(photo, kb, rect.w, rect.h, null);
     const sheen = h('div', 'sheen');
     clip.append(kb, sheen);
     el.append(clip);
     parent.append(el);
-    return { el, kb, sheen, gl, w: rect.w, h: rect.h, rect };
+    return { el, kb, img: im, sheen, gl, w: rect.w, h: rect.h, rect, rot: 0 };
   }
   const POL_SIDE = 18, POL_TOP = 18, POL_BOT = 84;
   function polaroid(parent, photo, pw, ph, cx, cy, rot, caption, tapeColor) {
@@ -678,7 +798,7 @@
   function handWrite(el, u, a, d = 1.3, alpha = 1) {
     const k = ramp(u, a, a + d);
     op(el, (k > 0 ? 1 : 0) * alpha);
-    css(el, 'clipPath', k >= 1 ? 'none' : `inset(-40% ${r2((1 - (0.2 * E.sine(k) + 0.8 * k)) * 100)}% -50% -10%)`);
+    css(el, CLIP, k >= 1 ? 'none' : `inset(-40% ${r2((1 - (0.2 * E.sine(k) + 0.8 * k)) * 100)}% -50% -10%)`);
   }
   function maskRow(parent, html, cls) {
     const m = h('div', 'm');
@@ -742,7 +862,9 @@
   };
   function kenBurns(pb, move, k, dx = 0, amp = 1) {
     const [x, y, s] = MOVES[move](clamp(k));
-    css(pb.kb, 'transform', `translate3d(${r2(x * amp * pb.w + dx)}px,${r2(y * amp * pb.h)}px,0) scale(${r4(1 + (s - 1) * amp)})`);
+    const L = pb.last || (pb.last = {});
+    L.tx = x * amp * pb.w + dx; L.ty = y * amp * pb.h; L.s = 1 + (s - 1) * amp;
+    css(pb.kb, 'transform', `translate3d(${r2(L.tx)}px,${r2(L.ty)}px,0) scale(${r4(L.s)})`);
   }
 
   // Fairy dust: a fleeting trail of golden light that curves across a photograph.
@@ -751,7 +873,7 @@
     const wrap = h('div', 'dust');
     wrap.style.cssText = `left:${r2(rect.x)}px;top:${r2(rect.y)}px;width:${r2(rect.w)}px;height:${r2(rect.h)}px`;
     const dots = [];
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < (LITE ? 14 : 20); i++) {
       const d = h('i', i === 0 ? 'head' : '');
       wrap.append(d);
       dots.push({ el: d, jx: (rnd() - 0.5) * 26, jy: (rnd() - 0.5) * 26, s: 0.5 + rnd() * 0.8 });
@@ -781,11 +903,28 @@
   /* =====================================================================
      THE EDIT
      ===================================================================== */
-  const DUR = { epic: 4.4, dream: 4.6, pair: 5.6, card: 5.2, album: 8.0, collage: 7.2 };
-  const CH_EXTRA = 2.8, CH_IN = 0.95, CH_OUT = 3.7, LINE_EXTRA = 1.4;
+  const DUR = { epic: 4.2, dream: 4.3, pair: 5.2, card: 4.9, album: 7.6, collage: 6.8 };
+  const CH_EXTRA = 2.6, CH_IN = 0.9, CH_OUT = 3.5, LINE_EXTRA = 1.3;
   const CARDY = { pair: 1, card: 1, collage: 1, album: 1 };
-  const TROT = ['dissolve', 'drift', 'dissolve', 'soft-wipe', 'dissolve', 'light', 'dissolve', 'drift'];
   const MROT = ['push', 'panL', 'rise', 'pull', 'panR', 'drift'];
+  // Ways a shot returns to the heart (taken in turn, so no two in a row are alike)
+  // and how long each takes. Each heart transition: return → a short hold on
+  // the heart → the next tile opens up.
+  const OUTS = ['fold', 'scatter', 'spin', 'fade'];
+  const CDUR = { fold: 0.95, spin: 1.1, fade: 1.2, scatter: 1.4 };
+  const ED = 0.95, HOLD = 0.3, HOLD_CH = 0.9, LEAD_IN = 0.32;
+  const TR0 = { kind: 'none', cd: 0, hold: 0, ed: 0, td: 0, lead: 0, dir: 1 };
+  const trCut = () => ({ kind: 'cut', cd: 0, hold: 0, ed: 0, td: 0.05, lead: 0, dir: 1 });
+  const trExpand = () => ({ kind: 'expand', inn: 'grow', cd: 0, hold: 0.45, ed: ED, td: 0.45 + ED, lead: 0.45 + LEAD_IN, dir: 1 });
+  const trCollapse = (out, dir) => ({ kind: 'collapse', out, cd: CDUR[out], hold: 0, ed: 0, td: CDUR[out], lead: 0, dir });
+  function trHeart(out, chapter, k) {
+    const cd = CDUR[out], hold = chapter ? HOLD_CH : HOLD;
+    return { kind: 'heart', out, inn: k % 3 === 2 ? 'swing' : 'grow', cd, hold, ed: ED, td: cd + hold + ED, lead: cd + hold + LEAD_IN, beat: !!chapter, dir: k % 2 ? -1 : 1 };
+  }
+  // sound & sticker timings shared by the compositions and their cues
+  const T_CH_POP = CH_IN + 1.9, T_NOTE = 1.3, T_PAIR_POP = 1.95, T_CARD_POP = 2.3, T_ALBUM_POP = 3.3;
+  const INTRO_DUR = 4.6;
+  const FIN = { D: 15.4, HB: 2.6, SA: 3.0, SB: 4.4, TA: 4.4 };
 
   const splitEven = (arr, c) => {
     const out = [];
@@ -794,12 +933,12 @@
     return out.filter(x => x.length);
   };
 
-  // Cold open: a light streak, a location card, three flash-cut montages
+  // Cold open: fairy dust, a location card, three flash-cut montages
   // separated by two words cards, accelerating into a hit and the title.
   function planOpener(pool) {
     const pick = k => (pool.length ? pool[Math.min(pool.length - 1, Math.floor(((k + 0.5) * pool.length) / 13))] : null);
     const cuts = [];
-    const add = (t, d, flash) => { const k = cuts.length, p = pick(k); if (p) cuts.push({ t, d, flash, photo: p, dx: (k % 2 ? -1 : 1) * 26, dy: (((k * 7) % 3) - 1) * 12 }); };
+    const add = (t, d, flash) => { const k = cuts.length, p = pick(k); if (p) cuts.push({ t, d, flash, photo: p, dx: (k % 2 ? -1 : 1) * 22, dy: (((k * 7) % 3) - 1) * 10 }); };
     [3.0, 3.7, 4.4].forEach(t => add(t, 0.7, 0.24));
     [6.3, 6.8, 7.3, 7.8].forEach(t => add(t, 0.5, 0.28));
     let t = 9.5;
@@ -817,8 +956,6 @@
     const thr = skies.length ? skies[Math.max(0, Math.floor(skies.length * 0.3) - 1)] : Infinity;
     return p => !p.portrait && typeof p.sky === 'number' && p.sky >= thr;
   }
-  // Shots for one auto chapter, keeping the order: portrait pairs, single cards,
-  // one scrapbook page, maybe a collage, and dreamy or epic heroes.
   function planChapter(chunk, c, isEpic) {
     const out = [];
     let i = 0, albumUsed = false, collageUsed = false;
@@ -894,26 +1031,29 @@
     const C = Math.max(1, Math.min(6, Math.round(list.length / 7.5)));
     const chunks = splitEven(list, C);
     const defs = nameChapters(chunks);
-    const lands = list.filter(x => !x.p.portrait).map(x => x.p);
     return {
       key,
-      montage: lands.length >= 8 ? lands : list.map(x => x.p),
+      montage: list.map(x => x.p),
       chapters: chunks.map((chunk, c) => ({ def: defs[c], shots: planChapter(chunk, c, isEpic), auto: true })),
       finale: {},
     };
   }
   function buildEdit(order) {
     const plan = (state.curated && EDIT && curatedPlan(order)) || autoPlan(order);
+    const keyPos = order.indexOf(plan.key);
     const items = [];
-    items.push(Object.assign({ type: 'opener', group: 0, trans: 'cut', photos: [plan.key], dur: 19.4, idx: 0 }, planOpener(plan.montage)));
-    let tr = 0, mv = 0, cap = 0, note = 0, pol = 0, side = 0;
+    items.push(Object.assign({ type: 'opener', group: 0, tr: TR0, photos: [plan.key], pos: [keyPos], dur: 19.4, idx: 0, lead: 0 }, planOpener(plan.montage)));
+    items.push({ type: 'heartIntro', group: 0, tr: trCollapse('fold', 1), photos: [], dur: INTRO_DUR, idx: 1, lead: 0 });
+    let mv = 0, cap = 0, note = 0, pol = 0, side = 0, hk = 0, first = true;
     plan.chapters.forEach((ch, c) => {
       let lineGiven = ch.shots.some(s => s.line);
       ch.shots.forEach((s, k) => {
         const it = { type: s.type, photos: s.ph.map(x => x.p), pos: s.ph.map(x => x.pos), group: c + 1, def: ch.def, idx: items.length };
-        it.trans = s.trans || (k === 0 ? 'dip-light' : s.type === 'album' ? 'dissolve' : TROT[tr++ % TROT.length]);
-        it.dur = s.dur || DUR[s.type];
-        if (k === 0) { it.chapter = { num: c + 1, en: ch.def.en, th: ch.def.th }; it.dur += CH_EXTRA + (CARDY[s.type] ? 1.4 : 0); }
+        it.tr = first ? trExpand() : s.trans === 'cut' ? trCut() : trHeart(OUTS[hk % OUTS.length], k === 0, hk++);
+        first = false;
+        it.lead = it.tr.lead;
+        it.dur = (s.dur || DUR[s.type]) + it.lead;
+        if (k === 0) { it.chapter = { num: c + 1, en: ch.def.en, th: ch.def.th }; it.dur += CH_EXTRA + (CARDY[s.type] ? 1.3 : 0); }
         if (s.type === 'epic' || s.type === 'dream') it.move = MROT[mv++ % MROT.length];
         if (s.type === 'card') it.caption = s.caption ? (typeof s.caption === 'string' ? { th: s.caption, en: '' } : s.caption) : CAPTIONS[cap++ % CAPTIONS.length];
         if (s.type === 'pair') it.caption = typeof s.caption === 'string' ? s.caption : (s.caption && s.caption.th) || CAPTIONS[cap++ % CAPTIONS.length].th;
@@ -928,13 +1068,55 @@
         }
         if (s.note) it.note = s.note;
         else if (ch.auto && (s.type === 'epic' || s.type === 'dream') && !it.line && !it.chapter) it.note = NOTES[note++ % NOTES.length];
-        it.dust = (s.type === 'epic' || s.type === 'dream' || s.type === 'card') && !(it.photos[0].lum < 0.38) && it.idx % 2 === 1;
+        it.dust = (s.type === 'epic' || s.type === 'dream' || s.type === 'card') && !isDark(it.photos[0]) && it.idx % 2 === 1;
         items.push(it);
       });
     });
     const C = plan.chapters.length;
-    items.push({ type: 'finale', group: C + 1, trans: 'light', photos: [plan.key], dur: 23.6, idx: items.length, fin: plan.finale });
-    return { items, chapters: C, key: plan.key, defs: plan.chapters.map(ch => ch.def) };
+    items.push({ type: 'finale', group: C + 1, tr: trCollapse('scatter', -1), photos: [], dur: FIN.D, idx: items.length, lead: 0, fin: plan.finale });
+    return { items, chapters: C, key: plan.key, keyPos, defs: plan.chapters.map(ch => ch.def) };
+  }
+
+  // Sound cues of a shot: [time, fn, raw]. Raw times count from the start of
+  // the shot's transition; the others from the start of its own content.
+  const contentAt = item => (item.chapter ? CH_OUT + 0.35 : 0);
+  function cuesOf(item) {
+    const out = [];
+    const c = (t, fn, raw) => out.push({ t, fn, raw: !!raw });
+    const tr = item.tr, T0 = contentAt(item);
+    if (tr.kind === 'heart' || tr.kind === 'collapse') {
+      const style = tr.out;
+      c(0, () => audio.collapse(style), true);
+      c(Math.max(0, tr.cd - 0.06), () => audio.ting(item.idx), true);
+    }
+    if (tr.kind === 'heart' || tr.kind === 'expand') {
+      if (tr.beat) c(tr.cd + 0.2, () => audio.heartbeat(), true);
+      if (tr.kind === 'expand') c(0.05, () => audio.ting(item.idx + 3), true);
+      c(Math.max(0, tr.cd + tr.hold - 0.05), () => audio.fold(true), true);
+    }
+    if (item.chapter) { c(CH_IN + 0.25, () => audio.gliss()); c(T_CH_POP, () => audio.pop()); }
+    if (item.note) c(T_NOTE + 1.0, () => audio.twinkle());
+    switch (item.type) {
+      case 'opener': {
+        const TA = item.titleAt;
+        c(0.15, () => audio.sparkle()); c(0.9, () => audio.drone(TA - 0.9)); c(1.05, () => audio.ping(1174.66, 0.025));
+        c(5.1, () => audio.whoosh(0.8, 0.05)); c(8.3, () => audio.whoosh(0.8, 0.05)); c(9.5, () => audio.riser(TA - 9.5)); c(TA, () => audio.hit());
+        item.cuts.forEach((ct, k) => c(ct.t, () => audio.cut(0.45 + k * 0.04)));
+        break;
+      }
+      case 'heartIntro':
+        c(1.2, () => audio.gliss()); c(INTRO_DUR - 0.65, () => audio.heartbeat()); c(INTRO_DUR - 0.6, () => audio.chime());
+        break;
+      case 'pair': c(T0 + T_PAIR_POP, () => audio.pop()); break;
+      case 'card': c(T0 + T_CARD_POP, () => audio.pop()); break;
+      case 'album': c(T0 + T_ALBUM_POP, () => audio.pop()); c(T0 + T_ALBUM_POP + 0.35, () => audio.pop()); break;
+      case 'finale':
+        c(FIN.HB - 1.6, () => audio.roll(1.6)); c(FIN.HB, () => audio.impact(true)); c(FIN.HB + 0.05, () => audio.chime());
+        c(FIN.TA, () => audio.gliss()); [0, 1, 2].forEach(i => c(FIN.TA + 0.3 + i * 0.25, () => audio.pop()));
+        break;
+      default: break;
+    }
+    return out;
   }
 
   /* =====================================================================
@@ -956,7 +1138,6 @@
     const sw = doodleInline(el, 'squiggle', 'chap__swash');
     tl.append(el);
     const base = align === 'center' ? 'translate(-50%,-50%)' : 'translateY(-50%)';
-    ctx.cue(CH_IN + 1.9, () => audio.pop());
     return u => {
       const out = E.sine(ramp(u, CH_OUT, CH_OUT + 0.9));
       op(sh, ramp(u, 0.1, 0.9) * (1 - E.sine(ramp(u, CH_OUT + 0.2, CH_OUT + 1.4))));
@@ -966,22 +1147,24 @@
       handWrite(hand, u, CH_IN + 0.25, 1.5);
       rise(en, u, CH_IN + 1.0);
       draw(sw, u, CH_IN + 1.3, 1.1);
-      pop(stk, u, CH_IN + 1.9);
+      pop(stk, u, T_CH_POP);
     };
   }
   function lineOverlay(ctx) {
     const { root, tl, item } = ctx;
     const sh = shade(root, 'bottom');
-    const a = item.chapter ? CH_OUT + 1.1 : 0.9, b = item.dur - 0.25;
+    const end = item.dur - item.lead;
+    const a = item.chapter ? CH_OUT + 1.1 : 0.9, b = end - 0.25;
     const tb = textBlock(tl, 'line', [{ html: item.line.en, cls: 'line__en' }, { html: item.line.th, cls: 'line__th' }]);
     return u => {
       op(sh, ramp(u, a - 0.4, a + 0.6) * (1 - ramp(u, b, b + 0.9)));
       playText(tb, u, a, b, { stagger: 0.22, dur: 1.5, outDur: 0.9 });
     };
   }
-  // A handwritten note with a little star, on a soft warm glow so it always reads.
+  // A handwritten note with a little star, on a soft light haze so it always reads.
   function noteBlock(ctx, text, x, y, rot, anchor, a) {
     const { root, tl, item } = ctx;
+    const end = item.dur - item.lead;
     const fs = 62, tw = Math.min(900, Array.from(text).length * fs * 0.5);
     const cx = anchor === 'right' ? x - tw / 2 : anchor === 'left' ? x + tw / 2 : x;
     const glow = h('div', 'shade note-shade');
@@ -995,10 +1178,9 @@
     wrap.append(hand);
     const star = doodle(wrap, 'sparkle', null, null, 46, 0, null, 'note__star');
     tl.append(wrap);
-    ctx.cue(a + 1.0, () => audio.twinkle());
     return u => {
-      const out = 1 - ramp(u, item.dur - 0.2, item.dur + 0.6);
-      op(glow, 0.8 * ramp(u, a - 0.3, a + 0.5) * out);
+      const out = 1 - ramp(u, end - 0.2, end + 0.6);
+      op(glow, 0.9 * ramp(u, a - 0.3, a + 0.5) * out);
       op(wrap, out);
       handWrite(hand, u, a, 1.3);
       draw(star, u, a + 1.0, 0.7);
@@ -1013,27 +1195,28 @@
   }
 
   /* =====================================================================
-     COMPOSITIONS — each gets { root, tl, item, n, all, cue } and returns
-     { render(u), fx(u) }, u = seconds since the shot began.
+     COMPOSITIONS — each gets { root, tl, item, n, all } and returns
+     { render(u), fx(u) } (u = seconds since the shot's own content began),
+     plus what its return to the heart needs: hero() for a single photo,
+     pieces + bg + deco when several photos fly home on their own.
      ===================================================================== */
   const MOODS = {
-    farm: { glow: 0.32, glowX: 0.86, glowY: 0.1, bokeh: 0.26, stars: 0.16 },
-    garden: { petals: 0.44, bokeh: 0.14, glow: 0.24, glowX: 0.8, glowY: 0.12, stars: 0.14 },
-    night: { flies: 0.72, bokeh: 0.06, grade: 0.14, fade: 0.08, vignette: 0.3, stars: 0.3 },
-    mist: { fog: 0.26, rays: 0.3, bokeh: 0.12, glow: 0.3, glowX: 0.76, glowY: 0.12, stars: 0.12 },
-    morning: { glow: 0.36, glowX: 0.82, glowY: 0.1, bokeh: 0.26, petals: 0.12, stars: 0.16 },
+    farm: { glow: 0.3, glowX: 0.86, glowY: 0.1, bokeh: 0.3, stars: 0.2 },
+    garden: { petals: 0.44, bokeh: 0.2, glow: 0.24, glowX: 0.8, glowY: 0.12, stars: 0.18 },
+    night: { flies: 0.6, bokeh: 0.16, stars: 0.36, glow: 0.2, glowX: 0.5, glowY: 0.16, fade: 0.14, vignette: 0.32 },
+    mist: { fog: 0.26, rays: 0.3, bokeh: 0.16, glow: 0.3, glowX: 0.76, glowY: 0.12, stars: 0.16 },
+    morning: { glow: 0.36, glowX: 0.82, glowY: 0.1, bokeh: 0.3, petals: 0.12, stars: 0.2 },
   };
   const mood = (item, o = {}, force) => fx(Object.assign({}, o, (item.def && MOODS[item.def.mood]) || {}, force || {}));
-  const contentAt = item => (item.chapter ? CH_OUT + 0.35 : 0);
+  const shotEnd = item => item.dur - item.lead;
 
-  // COLD OPEN — light streak → location card → flash-cut montage → words →
-  // faster cuts → a warm hit → the key-art landscape and the title.
+  // COLD OPEN — fairy dust → location card → flash-cut montage (every photo
+  // shown whole) → words → faster cuts → a bright hit → the key art and title.
   function compOpener(ctx) {
     const { root, tl, item } = ctx;
     const TA = item.titleAt;
-    const streak = h('div', 'streak', '<i></i>');
-    root.append(streak);
-    const cuts = item.cuts.map(c => Object.assign({}, c, { pb: photoBox(c.photo, root, null, 'pb--cut') }));
+    const dust = dustTrail(root, { x: 0, y: H * 0.16, w: W, h: H * 0.68 }, 5);
+    const cuts = item.cuts.map(c => Object.assign({}, c, heroPhoto(c.photo, root, 'pb--cut')));
     const hero = heroPhoto(item.photos[0], root, 'pb--key');
     const shadeT = shade(root, 'title');
     const card0 = textBlock(tl, 'card card--small', [
@@ -1051,39 +1234,30 @@
     ], 'translateY(-50%)');
     const letters = Array.from(title.el.querySelectorAll('.ch'));
     const mid = (letters.length - 1) / 2;
-    [
-      [0.15, () => audio.whoosh(1.5, 0.09)], [0.9, () => audio.drone(TA - 0.9)], [1.05, () => audio.ping(1174.66, 0.025)],
-      [5.1, () => audio.whoosh(0.8, 0.05)], [8.3, () => audio.whoosh(0.8, 0.05)], [9.5, () => audio.riser(TA - 9.5)], [TA, () => audio.hit()],
-    ].forEach(([t, fn]) => ctx.cue(t, fn));
-    item.cuts.forEach((c, k) => ctx.cue(c.t, () => audio.cut(0.45 + k * 0.04)));
     return {
       render(u) {
-        const ks = ramp(u, 0.2, 1.5);
-        show(streak, ks > 0 && ks < 1);
-        if (ks > 0 && ks < 1) {
-          css(streak.firstChild, 'transform', `translate3d(${r2(-0.7 * W + 2.0 * W * E.inOutCubic(ks))}px,0,0)`);
-          op(streak, Math.sin(Math.PI * ks));
-        }
+        renderDust(dust, u, 0.15, 2.4);
         playText(card0, u, 1.05, 2.5, { stagger: 0.18, dur: 1.2, outDur: 0.4, zoom: 0.05, zoomDur: 2 });
         playText(card1, u, 5.15, 5.95, { stagger: 0.14, dur: 0.9, outDur: 0.3, zoom: 0.07, zoomDur: 1.3 });
         playText(card2, u, 8.35, 9.15, { stagger: 0.14, dur: 0.9, outDur: 0.3, zoom: 0.07, zoomDur: 1.3 });
         cuts.forEach(c => {
           const vis = u >= c.t && u < c.t + c.d;
           show(c.pb.box, vis);
+          show(c.field, vis);
           if (!vis) return;
           const k = (u - c.t) / c.d;
-          css(c.pb.kb, 'transform', `translate3d(${r2(c.dx * (1 - k))}px,${r2(c.dy * (1 - k))}px,0) scale(${r4(1.12 - 0.07 * E.outCubic(k))})`);
+          css(c.pb.kb, 'transform', `translate3d(${r2(c.dx * (1 - k))}px,${r2(c.dy * (1 - k))}px,0) scale(${r4(1.08 - 0.08 * E.outCubic(k))})`);
         });
         const hv = u >= TA - 0.02;
         show(hero.pb.box, hv);
-        if (hero.field) show(hero.field, hv);
+        show(hero.field, hv);
         if (hv) {
-          const k = E.outCubic(ramp(u, TA, TA + 8));
-          css(hero.pb.kb, 'transform', `translate3d(0,${r2(-0.012 * hero.pb.h * k)}px,0) scale(${r4(1.24 - 0.17 * k)})`);
-          if (hero.field) css(hero.field, 'transform', `scale(${r4(1.12 - 0.06 * k)})`);
+          const k = E.outCubic(ramp(u, TA, TA + 7));
+          css(hero.pb.kb, 'transform', `scale(${r4(1.14 - 0.14 * k)})`);
+          css(hero.field, 'transform', `scale(${r4(1.12 - 0.06 * k)})`);
         }
-        op(shadeT, hv ? 0.62 * ramp(u, TA + 0.5, TA + 1.8) : 0);
-        playText(title, u, TA + 0.75, item.dur - 1.3, { stagger: 0.2, dur: 1.7, outDur: 1.0, zoom: 0.05, zoomDur: 6 });
+        op(shadeT, hv ? 0.95 * ramp(u, TA + 0.5, TA + 1.8) * (1 - ramp(u, item.dur - 1.6, item.dur - 0.6)) : 0);
+        playText(title, u, TA + 0.75, item.dur - 1.6, { stagger: 0.2, dur: 1.7, outDur: 1.0, zoom: 0.05, zoomDur: 6 });
         letters.forEach((el, i) => {
           const a = TA + 0.95 + Math.abs(i - mid) * 0.05;
           const k = E.outCubic(ramp(u, a, a + 1.4));
@@ -1099,29 +1273,42 @@
         return fx({
           bloom: flash,
           white: on ? 1 - E.outCubic(ramp(u, TA, TA + 1.2)) : 0,
-          fog: on ? 0.3 * ramp(u, TA + 0.2, TA + 2.5) : 0, fogLow: 0.95, fogWarm: 0.3,
-          glow: on ? 0.32 : 0, glowX: 0.72, glowY: 0.2,
-          leak: 0.45 * bump(u, TA + 0.6, 0.55),
-          stars: on ? 0.3 : 0, bokeh: on ? 0.16 : 0,
-          grade: on ? 0.24 : 0.1, fade: on ? 0.1 : 0, vignette: on ? 0.38 : 0.22, grain: 0.05,
+          fog: on ? 0.22 * ramp(u, TA + 0.2, TA + 2.5) : 0, fogLow: 0.95, fogWarm: 0.3,
+          glow: on ? 0.3 : 0.12, glowX: 0.72, glowY: 0.2,
+          leak: 0.4 * bump(u, TA + 0.6, 0.55),
+          stars: on ? 0.32 : 0.24, bokeh: on ? 0.2 : 0.18,
+          grade: on ? 0.18 : 0.08, fade: on ? 0.06 : 0, vignette: 0.16, grain: 0.04,
         });
       },
     };
   }
 
-  // EPIC — a landscape across the whole screen, slow camera, light and air.
+  // HEART INTRO — every photograph flies in to form the heart (drawn by the engine).
+  function compHeartIntro(ctx) {
+    ctx.root.style.background = 'transparent';
+    return {
+      render() {},
+      fx: u => fx({
+        stars: 0.42, bokeh: 0.3, petals: 0.18, glow: 0.22, glowX: 0.5, glowY: 0.25,
+        bloom: 0.2 * bump(u, INTRO_DUR - 0.6, 0.16), grade: 0.1, fade: 0, vignette: 0.12,
+      }),
+    };
+  }
+
+  // EPIC — a bright landscape across the whole screen, slow camera, light and air.
   function compEpic(ctx) {
-    if (PORT) return compDream(ctx);
     const { root, item } = ctx;
-    const pb = photoBox(item.photos[0], root, null, '', true);
+    const p = item.photos[0];
+    if (PORT || isDark(p)) return compDream(ctx);              // night photos float on a light field instead
+    const pb = photoBox(p, root, null, '', true);
     const parts = [];
     if (item.note) {
       const right = item.idx % 2 === 0;
-      parts.push(noteBlock(ctx, item.note, right ? W - 160 : 160, H * 0.8, right ? -4 : 3, right ? 'right' : 'left', 1.3));
+      parts.push(noteBlock(ctx, item.note, right ? W - 160 : 160, H * 0.8, right ? -4 : 3, right ? 'right' : 'left', T_NOTE));
     }
     const dust = item.dust ? dustTrail(root, { x: 0, y: 0, w: W, h: H }, item.idx) : null;
     const ov = overlays(ctx, { align: 'left' });
-    const span = item.dur + 2;
+    const span = shotEnd(item) + 2;
     const dustAt = item.chapter ? CH_OUT + 0.6 : 1.4;
     return {
       render(u) {
@@ -1132,6 +1319,7 @@
         parts.forEach(f => f(u));
       },
       fx: () => mood(item, { glow: 0.28, rays: 0.22 }),
+      hero: () => ({ photo: p, img: pb.img, box: { x: 0, y: 0, w: W, h: H }, last: pb.last, bs: 1, rot: 0, fx: pb.focus[0] / 100, fy: pb.focus[1] / 100, inset: [0, 0] }),
     };
   }
 
@@ -1147,25 +1335,27 @@
     const parts = [];
     if (item.note) {
       const right = item.idx % 2 === 0;
-      if (PORT) parts.push(noteBlock(ctx, item.note, W / 2, rect.y + rect.h + 110, -2, 'center', 1.3));
-      else parts.push(noteBlock(ctx, item.note, right ? rect.x + rect.w - 90 : rect.x + 90, rect.y + rect.h - 120, right ? -4 : 3, right ? 'right' : 'left', 1.3));
+      if (PORT) parts.push(noteBlock(ctx, item.note, W / 2, rect.y + rect.h + 110, -2, 'center', T_NOTE));
+      else parts.push(noteBlock(ctx, item.note, right ? rect.x + rect.w - 90 : rect.x + 90, rect.y + rect.h - 120, right ? -4 : 3, right ? 'right' : 'left', T_NOTE));
     }
     const dust = item.dust ? dustTrail(root, rect, item.idx) : null;
     const ov = overlays(ctx, { align: 'left' });
-    const span = item.dur + 2;
+    const span = shotEnd(item) + 2;
     const dustAt = item.chapter ? CH_OUT + 0.6 : 1.4;
     return {
       render(u) {
         const k = u / span;
         css(field, 'transform', `scale(${r4(1.08 + 0.04 * k)})`);
         kenBurns(dp, item.move, k, 0, 0.6);
-        css(dp.box, 'transform', `scale(${r4(0.985 + 0.02 * E.outSine(clamp(k)))})`);
+        dp.bs = 0.985 + 0.02 * E.outSine(clamp(k));
+        css(dp.box, 'transform', `scale(${r4(dp.bs)})`);
         renderGlints(dp.gl, u, 0.6);
         if (dust) renderDust(dust, u, dustAt);
         ov(u);
         parts.forEach(f => f(u));
       },
       fx: () => mood(item, { glow: 0.22 }),
+      hero: () => ({ photo: p, img: dp.img, box: rect, last: dp.last, bs: dp.bs, rot: 0, fx: 0.5, fy: 0.4, inset: [0.1, 0.12] }),
     };
   }
 
@@ -1174,7 +1364,9 @@
     const { root, tl, item } = ctx;
     const [p1, p2] = item.photos;
     const T0 = contentAt(item);
-    const field = fieldOf(p1, root);
+    const end = shotEnd(item);
+    const bg = layer(root);
+    const field = fieldOf(p1, bg);
     const r1 = ratioOf(p1), rr = ratioOf(p2);
     let defs, capY, heart;
     if (!PORT) {
@@ -1199,18 +1391,18 @@
     const cards = defs.map((d, j) => {
       const card = softCard(d.p, root, d.rect, { aura: true });
       const tp = tape(card.el, TAPES[(item.idx + j) % TAPES.length], 'left:50%;top:-18px', j ? 5 : -6);
-      const dd = j === 0 ? doodle(card.el, 'sparkle', -24, -16, 66, -8, '#ffe3a6') : doodle(card.el, 'star', d.rect.w + 28, d.rect.h - 36, 60, 10, '#ffe3a6');
+      const dd = j === 0 ? doodle(card.el, 'sparkle', -24, -16, 66, -8, '#f0b860') : doodle(card.el, 'star', d.rect.w + 28, d.rect.h - 36, 60, 10, '#f0b860');
       return Object.assign(d, { card, tp, dd });
     });
-    const hs = sticker(root, 'heart', heart[0], heart[1], heart[2], -8);
+    const deco = layer(root);
+    const hs = sticker(deco, 'heart', heart[0], heart[1], heart[2], -8);
     const cap = h('div', 'hand paircap', item.caption);
     cap.style.top = `${r2(capY)}px`;
     tl.append(cap);
     const ov = overlays(ctx, { align: 'center' });
-    ctx.cue(T0 + 1.95, () => audio.pop());
     return {
       render(u) {
-        const k0 = u / (item.dur + 2);
+        const k0 = u / (end + 2);
         css(field, 'transform', `scale(${r4(1.12 + 0.04 * k0)})`);
         cards.forEach((c, j) => {
           const a = T0 + 0.15 + j * 0.35;
@@ -1224,11 +1416,13 @@
           popTape(c.tp, u, a + 0.95);
           draw(c.dd, u, T0 + 2.2 + j * 0.3, 0.9);
         });
-        pop(hs, u, T0 + 1.95);
-        handWrite(cap, u, T0 + 2.0, 1.5, 1 - ramp(u, item.dur - 0.2, item.dur + 0.6));
+        pop(hs, u, T0 + T_PAIR_POP);
+        handWrite(cap, u, T0 + 2.0, 1.5, 1 - ramp(u, end - 0.2, end + 0.6));
         ov(u);
       },
       fx: () => mood(item, {}),
+      bg, deco,
+      pieces: cards.map((c, j) => ({ el: c.card.el, rect: c.rect, ox: 0.5, oy: 0.5, pos: item.pos[j] })),
     };
   }
 
@@ -1237,6 +1431,7 @@
     const { root, tl, item } = ctx;
     const p = item.photos[0], r = ratioOf(p);
     const T0 = contentAt(item);
+    const end = shotEnd(item);
     const field = fieldOf(p, root);
     const left = item.side === 'left';
     let rect, col;
@@ -1265,30 +1460,31 @@
     const dust = item.dust ? dustTrail(card.el, { x: 0, y: 0, w: rect.w, h: rect.h }, item.idx) : null;
     const ov = overlays(ctx, { align: 'center' });
     const capIn = T0 + 1.5;
-    ctx.cue(T0 + 2.3, () => audio.pop());
     return {
       render(u) {
-        const k = u / (item.dur + 2);
+        const k = u / (end + 2);
         css(field, 'transform', `translate3d(${r2((left ? -1 : 1) * 20 * k)}px,0,0) scale(${r4(1.1 + 0.04 * k)})`);
         const a = T0 + 0.1;
         const kin = E.outQuart(ramp(u, a, a + 1.7));
         const sway = Math.sin(u * 0.55) * 0.3 * kin;
+        card.rot = (left ? -1.6 : 1.6) + (1 - kin) * (left ? -5 : 5) + sway;
         op(card.el, ramp(u, a, a + 0.9));
-        css(card.el, 'transform', `translate3d(${r2((1 - kin) * (left ? -60 : 60))}px,${r2((1 - kin) * 24)}px,0) rotate(${r2((left ? -1.6 : 1.6) + (1 - kin) * (left ? -5 : 5) + sway)}deg)`);
+        css(card.el, 'transform', `translate3d(${r2((1 - kin) * (left ? -60 : 60))}px,${r2((1 - kin) * 24)}px,0) rotate(${r2(card.rot)}deg)`);
         kenBurns(card, 'settle', ramp(u, a, a + 3.6));
         sheenSweep(card.sheen, u, a + 1.3);
         renderGlints(card.gl, u, a + 1);
         popTape(tp, u, a + 1.0);
-        pop(stk, u, T0 + 2.3);
+        pop(stk, u, T0 + T_CARD_POP);
         if (dust) renderDust(dust, u, T0 + 2.6, 2.4);
-        op(col, 1 - ramp(u, item.dur - 0.2, item.dur + 0.6));
+        op(col, 1 - ramp(u, end - 0.2, end + 0.6));
         rise(idx, u, capIn);
         handWrite(hand, u, capIn + 0.2, 1.4);
         if (en) rise(en, u, capIn + 0.9);
         draw(dd, u, capIn + 1.3, 1.0);
         ov(u);
       },
-      fx: () => mood(item, { vignette: 0.26 }),
+      fx: () => mood(item, { vignette: 0.24 }),
+      hero: () => ({ photo: p, img: card.img, box: rect, last: card.last, bs: 1, rot: card.rot, fx: 0.5, fy: 0.4, inset: [0, 0] }),
     };
   }
 
@@ -1296,7 +1492,9 @@
   function compAlbum(ctx) {
     const { root, tl, item } = ctx;
     const T0 = contentAt(item);
-    root.append(h('div', 'paper'));
+    const D = shotEnd(item);
+    const bg = layer(root);
+    bg.append(h('div', 'paper'));
     const ph = item.photos;
     let Hp, centers, rots;
     if (!PORT) {
@@ -1315,21 +1513,20 @@
       rots = [-4, 3, -2.2];
     }
     const pols = ph.map((p, j) => polaroid(root, p, Hp * ratioOf(p), Hp, centers[j][0], centers[j][1], rots[j % 3], item.caps[j], TAPES[(item.idx + j) % TAPES.length]));
+    const deco = layer(root);
     const tY = PORT ? H * 0.12 : H * 0.14;
     const title = h('div', 'hand albumtitle', item.title);
     title.style.top = `${r2(tY)}px`;
     tl.append(title);
-    const sq = doodle(root, 'squiggle', W / 2, tY + (PORT ? 74 : 62), PORT ? 320 : 280, 0, '#d4a373');
+    const sq = doodle(deco, 'squiggle', W / 2, tY + (PORT ? 74 : 62), PORT ? 320 : 280, 0, '#d4a373');
     const [q0, q1, q2] = [pols[0], pols[1], pols[pols.length - 1]];
-    const deco = [
-      doodle(root, 'heart', q0.cx + q0.w / 2 + 34, q0.cy - q0.h / 2 - 8, 74, 12, '#e98aa5'),
-      doodle(root, 'sparkle', q2.cx + q2.w / 2 + 30, q2.cy - q2.h / 2 + 34, 62, 0, '#d4a373'),
-      doodle(root, 'sparkle', q2.cx + q2.w / 2 + 70, q2.cy - q2.h / 2 + 86, 38, 0, '#d4a373'),
+    const decos = [
+      doodle(deco, 'heart', q0.cx + q0.w / 2 + 34, q0.cy - q0.h / 2 - 8, 74, 12, '#e98aa5'),
+      doodle(deco, 'sparkle', q2.cx + q2.w / 2 + 30, q2.cy - q2.h / 2 + 34, 62, 0, '#d4a373'),
+      doodle(deco, 'sparkle', q2.cx + q2.w / 2 + 70, q2.cy - q2.h / 2 + 86, 38, 0, '#d4a373'),
     ];
-    if (!PORT && pols.length > 1) deco.push(doodle(root, 'arrow', q1.cx - q1.w / 2 - 44, q1.cy - q1.h / 2 - 70, 112, 20, '#9fb8d8'));
+    if (!PORT && pols.length > 1) decos.push(doodle(deco, 'arrow', q1.cx - q1.w / 2 - 44, q1.cy - q1.h / 2 - 70, 112, 20, '#9fb8d8'));
     const stks = [sticker(q1.el, 'heart', q1.w - 18, q1.h - 34, 96, 12), sticker(q2.el, 'star', 12, 22, 84, -14)];
-    stks.forEach((s, j) => ctx.cue(T0 + 3.3 + j * 0.35, () => audio.pop()));
-    const D = item.dur;
     return {
       render(u) {
         const out = 1 - ramp(u, D - 0.2, D + 0.6);
@@ -1347,10 +1544,12 @@
         });
         handWrite(title, u, T0 + 0.5, 1.4, out);
         draw(sq, u, T0 + 1.6, 0.9);
-        deco.forEach((d, j) => draw(d, u, T0 + 2.4 + j * 0.3, 0.9));
-        stks.forEach((s, j) => pop(s, u, T0 + 3.3 + j * 0.35));
+        decos.forEach((d, j) => draw(d, u, T0 + 2.4 + j * 0.3, 0.9));
+        stks.forEach((s, j) => pop(s, u, T0 + T_ALBUM_POP + j * 0.35));
       },
-      fx: () => mood(item, {}, { grade: 0.08, fade: 0.04, vignette: 0.12, glow: 0.12, rays: 0, fog: 0, bokeh: 0.1, flies: 0 }),
+      fx: () => mood(item, {}, { grade: 0.08, fade: 0, vignette: 0.1, glow: 0.12, rays: 0, fog: 0, bokeh: 0.12, flies: 0 }),
+      bg, deco,
+      pieces: pols.map((pl, j) => ({ el: pl.el, rect: { x: pl.cx - pl.w / 2, y: pl.cy - pl.h / 2, w: pl.w, h: pl.h }, ox: 0.5, oy: 0.4, pos: item.pos[j] })),
     };
   }
 
@@ -1358,12 +1557,14 @@
   function compCollage(ctx) {
     const { root, item } = ctx;
     const T0 = contentAt(item);
+    const end = shotEnd(item);
     const L = PORT
       ? (item.photos.length >= 4 ? [[0.42, 0.2, -3], [0.58, 0.4, 2.4], [0.42, 0.6, -2], [0.58, 0.8, 2.8]] : [[0.4, 0.25, -3], [0.6, 0.5, 2.4], [0.42, 0.75, -2]])
       : (item.photos.length >= 4 ? [[0.3, 0.29, -2.5], [0.7, 0.31, 2], [0.31, 0.71, 1.6], [0.69, 0.69, -2.2]] : [[0.27, 0.32, -2.6], [0.73, 0.36, 2.2], [0.5, 0.7, -1.2]]);
     const ph = item.photos.slice(0, L.length);
     const lastP = ph[ph.length - 1];
-    const field = fieldOf(lastP, root);
+    const bg = layer(root);
+    const field = fieldOf(lastP, bg);
     const cyC = PORT ? H * 0.45 : H * 0.5;
     const big = PORT ? fitIn(ratioOf(lastP), W * 0.9, H * 0.5) : fitIn(ratioOf(lastP), W * 0.8, H * 0.82);
     const cw = PORT ? W * 0.72 : W * 0.37, chh = PORT ? H * 0.2 : H * 0.37;
@@ -1375,10 +1576,10 @@
       return { card, isLast, s0: isLast ? f.w / big.w : 1, tx: L[j][0] * W - W / 2, ty: L[j][1] * H - cyC, rot: L[j][2] };
     });
     const ov = overlays(ctx, { align: 'center' });
-    const eA = item.dur - 2.6, eB = item.dur - 0.9;
+    const eA = end - 2.6, eB = end - 0.9;
     return {
       render(u) {
-        const k0 = u / (item.dur + 2);
+        const k0 = u / (end + 2);
         css(field, 'transform', `scale(${r4(1.1 + 0.04 * k0)})`);
         const ke = E.inOutCubic(ramp(u, eA, eB));
         cells.forEach((c, j) => {
@@ -1396,11 +1597,67 @@
         ov(u);
       },
       fx: () => mood(item, {}),
+      bg, deco: null,
+      pieces: cells.map((c, j) => ({ el: c.card.el, rect: c.card.rect, ox: 0.5, oy: 0.5, pos: item.pos[j] })),
     };
   }
 
-  // FINALE — the key art again, the closing line, then every photograph
-  // flies in to form a heart: it beats once, and the family's words appear.
+  // FINALE — the last shot returns to the heart, the heart (now in full colour)
+  // beats, moves aside, and the family's words appear. Then it fades to light.
+  function compFinale(ctx) {
+    const { root, tl, item } = ctx;
+    root.style.background = 'transparent';
+    const fin = item.fin || {};
+    const hs = state.heart;
+    const txt = h('div', 'fin' + (PORT ? ' fin--port' : ''));
+    if (PORT) txt.style.top = `${r2(hs.shiftY + hs.HS * hs.shiftS * 0.55 + 50)}px`;
+    else { txt.style.left = `${r2(W * 0.555)}px`; txt.style.transform = 'translateY(-50%)'; }
+    const row = h('div', 'fin__handrow');
+    const fh = h('div', 'hand fin__hand', fin.hand || COPY.heart);
+    row.append(fh);
+    const fd = doodleInline(row, 'heart', 'fin__heart');
+    txt.append(row);
+    const ft = maskRow(txt, 'Above <em>the</em> Clouds', 'fin__title');
+    const fr = h('div', 'fin__rule');
+    txt.append(fr);
+    const fm = maskRow(txt, 'Khao Kho · Phetchabun · 2026', 'fin__meta');
+    const fth = maskRow(txt, fin.thanks || COPY.thanks, 'fin__th');
+    tl.append(txt);
+    // stickers around the heart in its final place
+    const u_ = hs.unit * hs.shiftS, X = hs.shiftX, Y = hs.shiftY;
+    const sts = [
+      sticker(root, 'heart', X + 0.8 * u_, Y - 0.92 * u_, PORT ? 130 : 112, 12),
+      sticker(root, 'star', X - 1.04 * u_, Y - 0.3 * u_, PORT ? 104 : 90, -14),
+      sticker(root, 'cloud', X + 0.58 * u_, Y + 0.72 * u_, PORT ? 112 : 98, 8),
+    ];
+    const D = FIN.D;
+    return {
+      render(u) {
+        op(txt, u >= FIN.TA ? 1 : 0);
+        sts.forEach((st, i) => pop(st, u, FIN.TA + 0.3 + i * 0.25));
+        handWrite(fh, u, FIN.TA + 0.2, 1.5);
+        draw(fd, u, FIN.TA + 1.6, 1.0);
+        rise(ft, u, FIN.TA + 0.7, 1.5);
+        css(fr, 'transform', `scaleX(${r4(E.inOutCubic(ramp(u, FIN.TA + 1.2, FIN.TA + 2.3)))})`);
+        rise(fm, u, FIN.TA + 1.4);
+        rise(fth, u, FIN.TA + 1.9, 1.5);
+      },
+      fx(u) {
+        return fx({
+          glow: 0.24, glowX: 0.5, glowY: 0.2, bokeh: 0.34, flies: 0, stars: 0.46, petals: 0.3 * ramp(u, FIN.HB, FIN.HB + 2),
+          bloom: 0.24 * bump(u, FIN.HB + 0.16, 0.2), leak: 0.3 * bump(u, FIN.HB + 0.3, 0.5),
+          grade: 0.14, fade: 0, vignette: 0.1,
+          white: E.sine(ramp(u, D - 3.8, D - 1.4)),
+        });
+      },
+    };
+  }
+
+  const COMP = { opener: compOpener, heartIntro: compHeartIntro, epic: compEpic, dream: compDream, pair: compPair, card: compCard, album: compAlbum, collage: compCollage, finale: compFinale };
+
+  /* =====================================================================
+     THE HEART — every photograph as a tile; the home of the film
+     ===================================================================== */
   // Grid points filling the classic parametric heart (deep cleft, clear lobes).
   // Heart units: x ∈ [-0.94, 0.94], y ∈ [-1, 0.7], centre of the box at y = -0.15.
   const HEART = (() => {
@@ -1435,112 +1692,317 @@
     }
     return { pts: best, s: lo };
   }
-  function compFinale(ctx) {
-    const { root, tl, item } = ctx;
-    const all = ctx.all, D = item.dur, fin = item.fin || {};
-    const hero = heroPhoto(item.photos[0], root, 'pb--key');
-    const lineSh = shade(root, 'bottom');
-    const endLine = fin.line || COPY.end;
-    const line = textBlock(tl, 'line', [{ html: endLine.en, cls: 'line__en' }, { html: endLine.th, cls: 'line__th' }]);
+  function buildHeart() {
+    const n = state.order.length;
+    const HS = PORT ? Math.min(W * 0.8, H * 0.42) : H * 0.8;              // heart height in px
+    const hx = W / 2, hy = PORT ? H * 0.45 : H * 0.5;
+    const { pts, s } = heartPoints(Math.max(n, 64));
+    const unit = HS / 1.72, size = s * unit * 0.9;
     const stage = h('div', 'heart-stage');
     const glow = h('div', 'heart-glow');
     const tilesEl = h('div', 'heart-tiles');
     stage.append(glow, tilesEl);
-    root.append(stage);
-    const HS = PORT ? Math.min(W * 0.8, H * 0.4) : H * 0.7;          // heart height in px
-    const hx = PORT ? W / 2 : W * 0.31, hy = PORT ? H * 0.34 : H * 0.5;
-    const { pts, s } = heartPoints(Math.max(all.length, 64));       // enough tiles for a crisp shape
-    const unit = HS / 1.72, size = s * unit * 0.9;
+    scenesEl.prepend(stage);
     tilesEl.style.transformOrigin = `${r2(hx)}px ${r2(hy)}px`;
     glow.style.cssText = `left:${r2(hx - HS * 0.8)}px;top:${r2(hy - HS * 0.75)}px;width:${r2(HS * 1.6)}px;height:${r2(HS * 1.5)}px`;
-    const n = all.length;
-    const stride = [7, 11, 13, 17, 5, 3, 1].find(v => gcd(v, n) === 1) || 1;
-    const rnd = rng(4242);
-    const A0 = 5.4, SPAN = 3.4;
-    const ranked = pts.slice().sort((a, b) => a[1] - b[1]);       // from the bottom tip upward
-    const tiles = ranked.map((pt, rank) => {
-      const photo = all[(rank * stride) % n];
-      const el = h('div', 'tile');
-      const x = hx + pt[0] * unit, y = hy - (pt[1] + 0.15) * unit;
-      el.style.cssText = `left:${r2(x - size / 2)}px;top:${r2(y - size / 2)}px;width:${r2(size)}px;height:${r2(size)}px`;
-      const im = imgEl(photo, 'nodecode');
-      const f = focusOf(photo);
-      im.style.objectPosition = `${f[0]}% ${f[1]}%`;
-      el.append(im);
-      tilesEl.append(el);
-      return { el, a: A0 + (rank / ranked.length) * SPAN + rnd() * 0.25, dx: (rnd() - 0.5) * W * 0.9, dy: H * 0.55 + rnd() * H * 0.45, srot: (rnd() - 0.5) * 70, rot: (rnd() - 0.5) * 6, ph: rnd() * 6.28 };
+    // photos in the order the film shows them
+    const seen = new Set(), film = [];
+    const push = pos => { if (pos >= 0 && pos < n && !seen.has(pos)) { seen.add(pos); film.push(pos); } };
+    push(state.keyPos);
+    state.items.forEach(it => { if (it.type !== 'opener') (it.pos || []).forEach(push); });
+    state.order.forEach((p, pos) => push(pos));
+    film.forEach(pos => thumbOf(state.order[pos]));                     // small copies, in the order they are needed
+    // tiles fill up from the bottom tip, row by row (alternating direction);
+    // the key art sits at the centre
+    const tiles = pts.map(pt => ({ x: hx + pt[0] * unit, y: hy - (pt[1] + 0.15) * unit }));
+    const rows = new Map();
+    tiles.forEach((t, i) => { const k = Math.round(t.y); if (!rows.has(k)) rows.set(k, []); rows.get(k).push(i); });
+    const fill = [];
+    [...rows.keys()].sort((a, b) => b - a).forEach((k, r) => {
+      const row = rows.get(k).sort((a, b) => tiles[a].x - tiles[b].x);
+      if (r % 2) row.reverse();
+      fill.push(...row);
     });
-    const HB = A0 + SPAN + 1.75;
-    const txt = h('div', 'fin' + (PORT ? ' fin--port' : ''));
-    if (PORT) txt.style.top = `${r2(hy + HS * 0.55 + 50)}px`;
-    else { txt.style.left = `${r2(W * 0.555)}px`; txt.style.transform = 'translateY(-50%)'; }
-    const row = h('div', 'fin__handrow');
-    const fh = h('div', 'hand fin__hand', fin.hand || COPY.heart);
-    row.append(fh);
-    const fd = doodleInline(row, 'heart', 'fin__heart');
-    txt.append(row);
-    const ft = maskRow(txt, 'Above <em>the</em> Clouds', 'fin__title');
-    const fr = h('div', 'fin__rule');
-    txt.append(fr);
-    const fm = maskRow(txt, 'Khao Kho · Phetchabun · 2026', 'fin__meta');
-    const fth = maskRow(txt, fin.thanks || COPY.thanks, 'fin__th');
-    tl.append(txt);
-    const sts = [
-      sticker(stage, 'heart', hx + 0.8 * unit, hy - 0.92 * unit, PORT ? 130 : 112, 12),
-      sticker(stage, 'star', hx - 1.04 * unit, hy - 0.3 * unit, PORT ? 104 : 90, -14),
-      sticker(stage, 'cloud', hx + 0.58 * unit, hy + 0.72 * unit, PORT ? 112 : 98, 8),
-    ];
-    ctx.cue(HB, () => audio.chime());
-    sts.forEach((st, i) => ctx.cue(HB + 0.3 + i * 0.25, () => audio.pop()));
+    let keyTile = fill[0], best = Infinity;
+    tiles.forEach((t, i) => { const d = Math.hypot(t.x - hx, t.y - (hy - 0.05 * unit)); if (d < best) { best = d; keyTile = i; } });
+    const assign = new Array(tiles.length).fill(-1);
+    const primary = new Map();
+    assign[keyTile] = film[0];
+    primary.set(film[0], keyTile);
+    const rest = fill.filter(i => i !== keyTile), m = film.length - 1;
+    for (let k = 0; k < m; k++) {
+      const ti = rest[Math.min(rest.length - 1, Math.floor((k * rest.length) / Math.max(1, m)))];
+      if (assign[ti] >= 0) continue;
+      assign[ti] = film[k + 1];
+      primary.set(film[k + 1], ti);
+    }
+    // spare tiles repeat a photo from the far side of the film, so twins never sit together
+    rest.forEach((ti, q) => {
+      if (assign[ti] >= 0) return;
+      const k = Math.round((q * m) / Math.max(1, rest.length));
+      const pick = film[1 + ((k + Math.floor(m / 2)) % Math.max(1, m))];
+      assign[ti] = pick === undefined ? film[0] : pick;
+    });
+    // when each photo first appears (its tile turns from pale to full colour)
+    const seenAt = new Map([[state.keyPos, 0]]);
+    state.items.forEach((it, i) => {
+      if (it.type === 'opener') return;
+      (it.pos || []).forEach(p => {
+        const t0 = state.starts[i] + it.lead;
+        if (!seenAt.has(p) || seenAt.get(p) > t0) seenAt.set(p, t0);
+      });
+    });
+    const rnd = rng(4242);
+    const byY = tiles.map((t, i) => i).sort((a, b) => tiles[b].y - tiles[a].y);    // bottom tip first
+    const flyRank = new Map(byY.map((ti, k) => [ti, k]));
+    const tileObjs = tiles.map((t, i) => {
+      const el = h('div', 'tile is-dim');
+      el.style.cssText = `left:${r2(t.x - size / 2)}px;top:${r2(t.y - size / 2)}px;width:${r2(size)}px;height:${r2(size)}px`;
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = 4;
+      el.append(cv);
+      tilesEl.append(el);
+      const photo = state.order[assign[i]];
+      thumbOf(photo).then(th => {
+        if (!th) return;
+        const q = Math.min(th.width, th.height), f = focusOf(photo);
+        cv.width = cv.height = 160;
+        cv.getContext('2d').drawImage(th, (th.width - q) * f[0] / 100, (th.height - q) * f[1] / 100, q, q, 0, 0, 160, 160);
+      });
+      return {
+        el, cx: t.x, cy: t.y, visitT: seenAt.has(assign[i]) ? seenAt.get(assign[i]) : 0, visited: false, focused: false,
+        flyA: (flyRank.get(i) / tiles.length) * 2.2 + rnd() * 0.2, dx: (rnd() - 0.5) * W * 0.9, dy: H * 0.6 + rnd() * H * 0.4,
+        rot: (rnd() - 0.5) * 60,
+      };
+    });
+    const shiftS = PORT ? 0.9 : 0.88;
     return {
-      render(u) {
-        const aOn = u < 7.6;
-        show(hero.pb.box, aOn);
-        if (hero.field) show(hero.field, aOn);
-        if (aOn) css(hero.pb.kb, 'transform', `scale(${r4(1.1 - 0.06 * clamp(u / 7))})`);
-        op(lineSh, ramp(u, 0.6, 1.4) * (1 - ramp(u, 4.3, 5.3)));
-        playText(line, u, 0.9, 4.5, { stagger: 0.24, dur: 1.6, outDur: 0.9 });
-        const sOn = u >= 4.6;
-        show(stage, sOn);
-        if (!sOn) { op(txt, 0); return; }
-        op(stage, E.sine(ramp(u, 4.6, 6.4)));
-        const beat = 1 + 0.05 * bump(u, HB + 0.16, 0.11) + 0.025 * bump(u, HB + 0.46, 0.1);
-        const cam = 1 + 0.035 * E.sine(ramp(u, HB, D - 2));
-        css(tilesEl, 'transform', `scale(${r4(beat * cam)})`);
-        op(glow, 0.3 + 0.5 * ramp(u, HB - 0.7, HB + 0.3) + 0.12 * Math.sin(u * 1.4) * ramp(u, HB, HB + 1));
-        tiles.forEach(t => {
-          const vis = u >= t.a;
-          show(t.el, vis);
-          if (!vis) return;
-          const k = E.outQuart(ramp(u, t.a, t.a + 1.7));
-          const bob = Math.sin(u * 1.1 + t.ph) * 2.2 * k;
-          op(t.el, ramp(u, t.a, t.a + 0.5));
-          css(t.el, 'transform', `translate3d(${r2(t.dx * (1 - k))}px,${r2(t.dy * (1 - k) + bob)}px,0) rotate(${r2(t.srot * (1 - k) + t.rot)}deg) scale(${r4(0.55 + 0.45 * k)})`);
-        });
-        sts.forEach((st, i) => pop(st, u, HB + 0.3 + i * 0.25));
-        op(txt, 1);
-        handWrite(fh, u, HB + 0.5, 1.5);
-        draw(fd, u, HB + 1.9, 1.0);
-        rise(ft, u, HB + 1.0, 1.5);
-        css(fr, 'transform', `scaleX(${r4(E.inOutCubic(ramp(u, HB + 1.5, HB + 2.6)))})`);
-        rise(fm, u, HB + 1.7);
-        rise(fth, u, HB + 2.2, 1.5);
-      },
-      fx(u) {
-        const st = ramp(u, 4.6, 6.4);
-        return fx({
-          glow: 0.3 * (1 - st) + 0.24 * st, glowX: 0.72, glowY: 0.18, rays: 0.2 * (1 - st),
-          bokeh: 0.14 + 0.3 * st, flies: 0.3 * st, stars: 0.42 * st, petals: 0.3 * ramp(u, HB, HB + 2),
-          bloom: 0.24 * bump(u, HB + 0.18, 0.22), leak: 0.3 * bump(u, HB + 0.3, 0.5),
-          fog: 0.16 * (1 - st), grade: 0.18, fade: 0.06, vignette: 0.2 * (1 - st) + 0.08 * st,
-          white: E.sine(ramp(u, D - 4.6, D - 2.6)) * (1 - ramp(u, D - 2.2, D - 0.4)),
-          black: E.sine(ramp(u, D - 2.2, D - 0.4)),
-        });
-      },
+      stage, glow, tilesEl, tiles: tileObjs, primary, keyTile, hx, hy, HS, unit, size,
+      shiftX: PORT ? hx : W * 0.3, shiftY: PORT ? H * 0.32 : hy, shiftS,
     };
   }
+  const tileAt = ti => { const t = state.heart.tiles[ti]; return { i: ti, cx: t.cx, cy: t.cy, size: state.heart.size }; };
+  const tileOfPos = pos => {
+    const hs = state.heart;
+    if (!hs) return null;
+    return tileAt(hs.primary.has(pos) ? hs.primary.get(pos) : hs.keyTile);
+  };
+  const tileOf = it => tileOfPos(it && it.pos && it.pos.length ? it.pos[0] : state.keyPos);
+  function renderHeart(t, o) {
+    const hs = state.heart;
+    if (!hs) return;
+    const on = o.vis > 0.003;
+    css(hs.stage, 'display', on ? 'block' : 'none');
+    if (!on) return;
+    op(hs.stage, o.vis);
+    const sh = o.shift;
+    const sc = lerp(1, hs.shiftS, sh) * (1 + 0.06 * o.beat) * (1 + 0.012 * Math.sin(t * 2.4));    // the heart breathes
+    const tf = `translate3d(${r2((hs.shiftX - hs.hx) * sh)}px,${r2((hs.shiftY - hs.hy) * sh)}px,0) scale(${r4(sc)})`;
+    css(hs.tilesEl, 'transform', tf);
+    css(hs.glow, 'transform', tf);
+    let fmax = 0;
+    o.focus.forEach(v => { fmax = Math.max(fmax, v); });
+    op(hs.glow, 0.34 + 0.45 * o.beat + 0.22 * fmax);
+    hs.tiles.forEach((tl, i) => {
+      const visited = t >= tl.visitT;
+      if (visited !== tl.visited) { tl.visited = visited; tl.el.classList.toggle('is-dim', !visited); }
+      const fk = o.focus.get(i) || 0;
+      const isF = fk > 0.02;
+      if (isF !== tl.focused) { tl.focused = isF; tl.el.classList.toggle('is-focus', isF); }
+      let tfm = '', alpha = 1;
+      if (o.fly != null && i !== hs.keyTile) {
+        const k = E.outQuart(ramp(o.fly, tl.flyA, tl.flyA + 1.5));
+        alpha = ramp(o.fly, tl.flyA, tl.flyA + 0.4);
+        if (k < 1) tfm = `translate3d(${r2(tl.dx * (1 - k))}px,${r2(tl.dy * (1 - k))}px,0) rotate(${r2(tl.rot * (1 - k))}deg) scale(${r4(0.5 + 0.5 * k)})`;
+      }
+      if (isF) tfm += ` scale(${r4(1 + 0.32 * fk)})`;
+      css(tl.el, 'transform', tfm || 'none');
+      op(tl.el, alpha);
+    });
+  }
 
-  const COMP = { opener: compOpener, epic: compEpic, dream: compDream, pair: compPair, card: compCard, album: compAlbum, collage: compCollage, finale: compFinale };
+  /* =====================================================================
+     RETURNING TO THE HEART — fold, spin, fade into stardust, scatter
+     ===================================================================== */
+  // A whole scene folded into (k = 1), or opened out of (k = 0), a tile: it
+  // shrinks along the natural zoom path and rounds into the tile's square.
+  function sceneState(s, k, tile, rot = 0, arc = 0) {
+    if (!tile || k <= 0.0005) {
+      css(s.root, 'transform', 'none');
+      css(s.root, CLIP, 'none');
+      return;
+    }
+    const m = Math.min(W, H), s1 = tile.size / m;
+    const sc = Math.exp(Math.log(s1) * k);
+    const g = (1 - sc) / (1 - s1);
+    const dx = tile.cx - W / 2, dy = tile.cy - H / 2, len = Math.hypot(dx, dy) || 1;
+    const bend = arc * len * Math.sin(Math.PI * g);
+    const tx = dx * g - (dy / len) * bend, ty = dy * g + (dx / len) * bend;
+    css(s.root, 'transform', `translate3d(${r2(tx)}px,${r2(ty)}px,0) rotate(${r2(rot)}deg) scale(${r4(sc)})`);
+    const ix = ((W - m) / 2) * g, iy = ((H - m) / 2) * g;
+    const rad = (ramp(g, 0, 0.08) * lerp(34, 16, g)) / sc;
+    css(s.root, CLIP, `inset(${r2(iy)}px ${r2(ix)}px round ${r2(rad)}px)`);
+  }
+  const layersOn = s => { if (s.bg) op(s.bg, 1); if (s.deco) op(s.deco, 1); };
+
+  // SCATTER (one photo): the photo cracks into small tiles that burst apart,
+  // swirl, and reassemble as a miniature inside its tile of the heart.
+  const shardsEl = h('div', 'shards');
+  let shardSet = null;
+  function clearShards() { if (shardSet) { shardsEl.textContent = ''; shardSet = null; } }
+  function drawPart(g, src, sw, sh, x0, y0, x1, y1, dw, dh) {
+    const kx = dw / (x1 - x0), ky = dh / (y1 - y0);
+    const cx0 = clamp(x0, 0, sw), cy0 = clamp(y0, 0, sh), cx1 = clamp(x1, 0, sw), cy1 = clamp(y1, 0, sh);
+    if (cx1 - cx0 < 0.5 || cy1 - cy0 < 0.5) return;
+    g.drawImage(src, cx0, cy0, cx1 - cx0, cy1 - cy0, (cx0 - x0) * kx, (cy0 - y0) * ky, (cx1 - cx0) * kx, (cy1 - cy0) * ky);
+  }
+  function makeShards(key, s, tile, dir) {
+    const hr = s.hero && s.hero();
+    if (!hr || !hr.img) return null;
+    const ph = hr.photo, img = hr.img;
+    let src = img, sx = img.naturalWidth / ph.w;
+    if (!(img.complete && img.naturalWidth)) {
+      const th = thumbs.get(ph.url);
+      if (!th) return null;
+      src = th; sx = th.width / ph.w;
+    }
+    const srcW = ph.w * sx, srcH = ph.h * sx;
+    const B = hr.box, bs = hr.bs || 1, L = hr.last || { tx: 0, ty: 0, s: 1 };
+    const c = Math.max(B.w / ph.w, B.h / ph.h);
+    const ox = (B.w - ph.w * c) * hr.fx, oy = (B.h - ph.h * c) * hr.fy;
+    const bcx = B.x + B.w / 2, bcy = B.y + B.h / 2;
+    const toImg = (px, py) => {                           // canvas point (unrotated) → image pixel
+      const bx = (px - bcx) / bs, by = (py - bcy) / bs;
+      const lx = (bx - L.tx) / L.s + B.w / 2, ly = (by - L.ty) / L.s + B.h / 2;
+      return [((lx - ox) / c) * sx, ((ly - oy) / c) * sx];
+    };
+    const Vw = B.w * bs * (1 - 2 * hr.inset[0]), Vh = B.h * bs * (1 - 2 * hr.inset[1]);
+    const N = LITE ? 16 : 24;
+    const cols = Math.max(2, Math.round(Math.sqrt((N * Vw) / Vh))), rows = Math.max(2, Math.round(N / cols));
+    const cw = Vw / cols, ch = Vh / rows;
+    const sEnd = (tile.size * 1.04) / Math.max(Vw, Vh);
+    const rot0 = hr.rot || 0, ra = (rot0 * Math.PI) / 180, ca = Math.cos(ra), sa = Math.sin(ra);
+    const px = clamp(state.px, 0.6, 2);
+    const rnd = rng(key * 131 + 7);
+    const list = [];
+    for (let rr = 0; rr < rows; rr++) for (let q = 0; q < cols; q++) {
+      const lx = -Vw / 2 + (q + 0.5) * cw, ly = -Vh / 2 + (rr + 0.5) * ch;
+      const cv = document.createElement('canvas');
+      cv.className = 'shard';
+      cv.width = Math.max(2, Math.round(cw * px));
+      cv.height = Math.max(2, Math.round(ch * px));
+      cv.style.width = `${r2(cw)}px`;
+      cv.style.height = `${r2(ch)}px`;
+      const [s0x, s0y] = toImg(bcx + lx - cw / 2, bcy + ly - ch / 2), [s1x, s1y] = toImg(bcx + lx + cw / 2, bcy + ly + ch / 2);
+      try { drawPart(cv.getContext('2d'), src, srcW, srcH, s0x, s0y, s1x, s1y, cv.width, cv.height); } catch (e) { /* leave it blank */ }
+      shardsEl.append(cv);
+      const x0 = bcx + lx * ca - ly * sa, y0 = bcy + lx * sa + ly * ca;
+      const ang = Math.atan2(y0 - bcy, x0 - bcx) + (rnd() - 0.5) * 0.9, bd = (50 + rnd() * 130) * (LITE ? 0.8 : 1);
+      const bx = x0 + Math.cos(ang) * bd, by = y0 + Math.sin(ang) * bd;
+      const tx = tile.cx + lx * sEnd, ty = tile.cy + ly * sEnd;
+      const curl = (0.25 + rnd() * 0.35) * dir;
+      list.push({
+        el: cv, w: cw, h: ch, x0, y0, bx: bx - x0, by: by - y0, tx, ty,
+        mx: (bx + tx) / 2 - (ty - by) * curl, my: (by + ty) / 2 + (tx - bx) * curl,
+        rot0, br: (rnd() < 0.5 ? -1 : 1) * (12 + rnd() * 30), d: rnd() * 0.14,
+      });
+    }
+    return { key, list, lnEnd: Math.log(sEnd), dir, low: src !== img };
+  }
+  const heroReady = s => { const hr = s.hero && s.hero(); return !!(hr && hr.img && hr.img.complete && hr.img.naturalWidth); };
+  function renderShards(key, s, u, cd, tile, dir) {
+    if (!shardSet || shardSet.key !== key || (shardSet.low && heroReady(s))) {
+      clearShards();
+      shardSet = makeShards(key, s, tile, dir);
+      if (!shardSet) return false;
+    }
+    shardSet.list.forEach(p => {
+      const kA = E.outCubic(ramp(u, p.d, p.d + 0.45));
+      const kB = E.inOutCubic(ramp(u, 0.28 + p.d, cd - 0.05));
+      const sx = p.x0 + p.bx * kA, sy = p.y0 + p.by * kA, ie = 1 - kB;
+      const x = ie * ie * sx + 2 * ie * kB * p.mx + kB * kB * p.tx;
+      const y = ie * ie * sy + 2 * ie * kB * p.my + kB * kB * p.ty;
+      const rot = (p.rot0 + p.br * kA) * (1 - kB) + shardSet.dir * 360 * kB;
+      const sc = Math.exp(lerp(Math.log(1 - 0.14 * kA), shardSet.lnEnd, kB));
+      css(p.el, 'transform', `translate3d(${r2(x - p.w / 2)}px,${r2(y - p.h / 2)}px,0) rotate(${r2(rot)}deg) scale(${r4(sc)})`);
+      op(p.el, 1 - ramp(kB, 0.84, 1));
+    });
+    return true;
+  }
+
+  // SCATTER (several photos): every print flies home to its own tile, twirling.
+  function gatherPieces(s, u, cd, dir, hv) {
+    op(s.bg, 1 - E.sine(ramp(u, 0, 0.7)));
+    if (s.deco) op(s.deco, 1 - ramp(u, 0, 0.35));
+    s.pieces.forEach((pc, j) => {
+      const tile = tileOfPos(pc.pos);
+      if (!tile) return;
+      const a = j * 0.12, b = cd - 0.16 + a * 0.3;
+      hv.focus.set(tile.i, Math.max(hv.focus.get(tile.i) || 0, bump(u, b, 0.14)));
+      const k = E.inOutCubic(ramp(u, a, b));
+      if (k <= 0) return;
+      const cache = pc.el._c || {};
+      const base = cache.transform && cache.transform !== 'none' ? cache.transform : '';
+      const baseOp = cache.opacity != null ? +cache.opacity : 1;
+      const r = pc.rect, Ox = r.x + pc.ox * r.w, Oy = r.y + pc.oy * r.h, Cx = r.x + r.w / 2, Cy = r.y + r.h / 2;
+      const sEnd = (tile.size * 0.98) / Math.max(r.w, r.h);
+      const sc = Math.exp(Math.log(sEnd) * k), g = (1 - sc) / (1 - sEnd);
+      const sd = j % 2 ? -dir : dir;
+      const dx = tile.cx - Cx, dy = tile.cy - Cy, len = Math.hypot(dx, dy) || 1;
+      const bend = 0.3 * sd * len * Math.sin(Math.PI * g);
+      const px = Cx + dx * g - (dy / len) * bend, py = Cy + dy * g + (dx / len) * bend;
+      const tx = px - Ox - sc * (Cx - Ox), ty = py - Oy - sc * (Cy - Oy);
+      css(pc.el, 'transform', `translate3d(${r2(tx)}px,${r2(ty)}px,0) rotate(${r2(sd * 360 * k)}deg) scale(${r4(sc)}) ${base}`);
+      op(pc.el, baseOp * (1 - ramp(k, 0.86, 1)));
+    });
+  }
+
+  function collapse(s, pItem, tr, u, hv, streams, key) {
+    const cd = tr.cd, p = clamp(u / cd);
+    const tile = tileOf(pItem);
+    op(s.tl, 1 - ramp(u, 0, 0.3));
+    let style = tr.out, shards = false;
+    const hasPieces = !!(s.pieces && s.pieces.length && s.bg);
+    if (style === 'scatter' && !hasPieces && !s.hero) style = 'fold';
+    hv.focus.set(tile.i, Math.max(hv.focus.get(tile.i) || 0, bump(u, cd, 0.14)));
+    switch (style) {
+      case 'fold':
+        sceneState(s, E.inOutCubic(p), tile, 0, 0.16 * tr.dir);
+        op(s.root, 1 - ramp(p, 0.86, 1));
+        streams.push({ k: p, tx: tile.cx, ty: tile.cy, n: 10, seed: key, a: 0.75 });
+        break;
+      case 'spin':
+        sceneState(s, E.inOutCubic(p), tile, tr.dir * 360 * E.inOutCubic(Math.pow(p, 1.25)), 0);
+        op(s.root, 1 - ramp(p, 0.86, 1));
+        streams.push({ k: p, tx: tile.cx, ty: tile.cy, n: 12, seed: key, a: 0.75 });
+        break;
+      case 'fade':
+        sceneState(s, 0.26 * E.outSine(p), tile, 0, 0);
+        op(s.root, 1 - E.sine(ramp(p, 0.04, 0.82)));
+        streams.push({ k: p, tx: tile.cx, ty: tile.cy, n: LITE ? 22 : 36, seed: key, a: 1 });
+        break;
+      default:                                                   // scatter
+        sceneState(s, 0);
+        if (hasPieces) { op(s.root, 1); gatherPieces(s, u, cd, tr.dir, hv); }
+        else {
+          shards = renderShards(key, s, u, cd, tile, tr.dir);
+          op(s.root, shards ? 1 - ramp(u, 0, 0.26) : 1 - ramp(p, 0.3, 0.9));
+        }
+        streams.push({ k: p, tx: tile.cx, ty: tile.cy, n: 8, seed: key + 1, a: 0.6 });
+        break;
+    }
+    return shards;
+  }
+  function expand(s, it, tr, u, hv) {
+    const eA = tr.cd + tr.hold, ke = E.inOutCubic(ramp(u, eA, eA + tr.ed));
+    const tile = tileOf(it);
+    const swing = tr.inn === 'swing';
+    sceneState(s, 1 - ke, tile, swing ? tr.dir * -18 * (1 - ke) : 0, swing ? 0 : 0.1 * tr.dir);
+    op(s.root, ramp(u, eA - 0.02, eA + 0.16));
+    op(s.tl, ramp(u, eA + tr.ed * 0.55, eA + tr.ed));
+    layersOn(s);
+    hv.focus.set(tile.i, Math.max(hv.focus.get(tile.i) || 0, ramp(u, eA - 0.38, eA - 0.05) * (1 - ramp(u, eA + 0.15, eA + 0.5))));
+  }
 
   /* =====================================================================
      ENGINE
@@ -1557,6 +2019,7 @@
   const fog = new FogRenderer($('fxFog'));
   if (!fog.ok) { $('fxFog').hidden = true; fxEls.fogCss.hidden = false; }
   const particles = new Particles($('fxParticles'));
+  if (ZOOM_OK) stage.classList.add('zoomed');
 
   function computeDims() {
     const vw = innerWidth || stage.clientWidth, vh = innerHeight || stage.clientHeight;
@@ -1568,7 +2031,9 @@
   function applyScale() {
     const { vw, vh } = computeDims();
     const s = Math.max(vw / W, vh / H);                       // always fill the screen
-    canvasRoot.style.transform = `translate(${r2((vw - W * s) / 2)}px,${r2((vh - H * s) / 2)}px) scale(${r4(s)})`;
+    state.px = s * (window.devicePixelRatio || 1);
+    if (ZOOM_OK) css(canvasRoot, 'zoom', String(r4(s)));
+    else canvasRoot.style.transform = `translate(${r2((vw - W * s) / 2)}px,${r2((vh - H * s) / 2)}px) scale(${r4(s)})`;
   }
   function setGeometry() {
     const d = computeDims();
@@ -1585,18 +2050,20 @@
     setGeometry();
     scenesEl.innerHTML = '';
     titlesEl.innerHTML = '';
+    shardSet = null;
+    shardsEl.textContent = '';
     const n = state.order.length;
     if (!n) return;
     const prevTotal = state.total;
-    const { items, chapters, key, defs } = buildEdit(state.order);
+    const { items, chapters, keyPos, defs } = buildEdit(state.order);
     state.items = items;
     state.starts = [];
     let acc = 0;
     items.forEach(it => { state.starts.push(acc); acc += it.dur; });
     state.durs = items.map(it => it.dur);
     state.total = acc;
-    state.keyPos = state.order.indexOf(key);
-    state.scoreStart = items[0].titleAt + 0.7;
+    state.keyPos = keyPos;
+    state.scoreStart = items[0].titleAt;
     state.groups = [];
     for (let gi = 0; gi < chapters + 2; gi++) {
       const idx = items.map((it, i) => (it.group === gi ? i : -1)).filter(i => i >= 0);
@@ -1606,30 +2073,55 @@
       state.groups.push({ gi, start: startT, dur: state.starts[last] + state.durs[last] - startT, items: idx, chapter: ch });
     }
     state.photoItem = new Array(n).fill(-1);
-    items.forEach((it, i) => (it.pos || []).forEach(p => { if (state.photoItem[p] < 0) state.photoItem[p] = i; }));
+    items.forEach((it, i) => (it.pos || []).forEach(p => { if (state.photoItem[p] < 0 && it.type !== 'opener') state.photoItem[p] = i; }));
     if (state.keyPos >= 0 && state.photoItem[state.keyPos] < 0) state.photoItem[state.keyPos] = 0;
     state.cues = [];
-    state.scenes = items.map((item, i) => {
-      const root = h('div', 'scene');
-      const cam = h('div', 'cam');
-      const tl = h('div', 'scene');
-      root.style.zIndex = String(i + 1);
-      root.append(cam);
-      scenesEl.append(root);
-      titlesEl.append(tl);
-      const cues = [];
-      const api = COMP[item.type]({ root: cam, tl, item, n, all: state.order, cue: (t, fn) => cues.push({ t, fn }) });
-      cues.forEach(c => state.cues.push({ t: state.starts[i] + c.t, fn: c.fn }));
-      return Object.assign({ root, cam, tl, item, visible: false, imgs: Array.from(cam.querySelectorAll('img:not(.nodecode)')) }, api);
-    });
+    items.forEach((it, i) => cuesOf(it).forEach(c => state.cues.push({ t: state.starts[i] + (c.raw ? 0 : it.lead) + c.t, fn: c.fn })));
     state.cues.sort((a, b) => a.t - b.t);
+    // the opener's photos are needed first, then the heart's (in film order)
+    items[0].cuts.forEach(c => thumbOf(c.photo));
+    state.heart = buildHeart();
+    scenesEl.append(shardsEl);
+    state.scenes = new Array(items.length).fill(null);
     state.warmed = new Set();
     if (resetT) state.t = 0;
     else if (prevTotal > 1) state.t = clamp(state.t * (state.total / prevTotal), 0, state.total - 0.01);
     state.lastItem = itemAt(state.t);
+    ensureWindow(state.lastItem);
     if (state.playing) { state.baseT = state.t; state.baseNow = performance.now(); }
     state.dirty = true;
     buildGallery();
+  }
+
+  // Only the shots around the playhead exist in the page: the previous one
+  // (for its transition), the current one and the next two.
+  function ensureWindow(i) {
+    const N = state.items.length, keep = new Set();
+    [i - 1, i, i + 1, i + 2].forEach(k => { if (k >= 0 && k < N) keep.add(k); });
+    if (i >= N - 2) keep.add(0);                              // the loop comes back to the opener
+    state.scenes.forEach((s, k) => { if (s && !keep.has(k)) releaseScene(k); });
+    keep.forEach(k => { if (!state.scenes[k]) buildScene(k); });
+  }
+  function buildScene(i) {
+    const item = state.items[i];
+    const root = h('div', 'scene'), cam = h('div', 'cam'), tl = h('div', 'scene');
+    root.style.zIndex = String(i + 1);
+    tl.style.zIndex = String(i + 1);
+    root.append(cam);
+    scenesEl.append(root);
+    titlesEl.append(tl);
+    const api = COMP[item.type]({ root: cam, tl, item, n: state.order.length, all: state.order });
+    const s = Object.assign({ root, cam, tl, item, visible: false, imgs: Array.from(cam.querySelectorAll('img')) }, api);
+    state.scenes[i] = s;
+    return s;
+  }
+  function releaseScene(i) {
+    const s = state.scenes[i];
+    if (!s) return;
+    s.root.remove();
+    s.tl.remove();
+    state.scenes[i] = null;
+    state.warmed.delete(i);
   }
 
   function itemAt(t) {
@@ -1646,106 +2138,106 @@
 
   // Decode a shot's photographs off the main thread shortly before it starts.
   function warm(i) {
-    if (!state.scenes[i] || state.warmed.has(i)) return;
+    const s = state.scenes[i];
+    if (!s || state.warmed.has(i)) return;
     state.warmed.add(i);
-    state.scenes[i].imgs.forEach(img => { if (img.decode) img.decode().catch(() => {}); });
+    s.imgs.forEach(img => { if (img.decode) img.decode().catch(() => {}); });
   }
   function warmAround(t) {
     const i = itemAt(t), u = t - state.starts[i];
     warm(i);
-    if (state.durs[i] - u < 3.5) warm((i + 1) % state.scenes.length);
-    if (i === 0) for (let k = 1; k < 3; k++) warm(k);
-    if (state.warmed.size > 6) for (const k of state.warmed) if (k < i - 1 || k > i + 2) state.warmed.delete(k);
+    if (state.durs[i] - u < 3.5) warm(i + 1);
   }
 
-  /* Transitions between shots (named on the incoming shot). */
-  const TD = { cut: 0.05, dissolve: 1.4, 'soft-wipe': 1.6, light: 1.7, drift: 1.5, 'dip-light': 2.0 };
   const FX0 = {
-    grade: 0.22, fade: 0.12, glow: 0, glowX: 0.72, glowY: 0.18, rays: 0, leak: 0, bloom: 0,
-    fog: 0, fogLow: 0.85, fogWarm: 0.3, grain: 0.035, vignette: 0.22, black: 0, white: 0,
-    bokeh: 0.14, petals: 0, flies: 0, stars: 0,
+    grade: 0.2, fade: 0.06, glow: 0, glowX: 0.72, glowY: 0.18, rays: 0, leak: 0, bloom: 0,
+    fog: 0, fogLow: 0.85, fogWarm: 0.3, grain: 0.03, vignette: 0.2, black: 0, white: 0,
+    bokeh: 0.16, petals: 0, flies: 0, stars: 0,
   };
   const fx = o => Object.assign({}, FX0, o);
   const mixFx = (a, b, k) => { const o = {}; for (const key in FX0) o[key] = lerp(a[key], b[key], k); return o; };
 
   function renderAt(t) {
-    if (!state.scenes.length) return;
-    const i = itemAt(t), u = t - state.starts[i];
-    const it = state.items[i];
-    const td = TD[it.trans] || 0;
-    state.scenes.forEach((s, k) => {
-      const vis = k === i || (k === i - 1 && u < td);
+    if (!state.items.length) return;
+    const i = itemAt(t), it = state.items[i], u = t - state.starts[i], tr = it.tr;
+    const inTr = i > 0 && u < tr.td;
+    const cur = state.scenes[i] || buildScene(i);
+    const prev = inTr ? state.scenes[i - 1] || buildScene(i - 1) : null;
+    state.scenes.forEach(s => {
+      if (!s) return;
+      const vis = s === cur || s === prev;
       if (vis !== s.visible) {
         s.root.classList.toggle('is-visible', vis);
         s.tl.classList.toggle('is-visible', vis);
         s.visible = vis;
       }
-      if (!vis) return;
-      s.render(t - state.starts[k]);
-      css(s.root, 'transform', 'none');
-      setMask(s.root, 'none');
-      op(s.root, 1);
     });
-    let f = state.scenes[i].fx(u);
-    if (i > 0 && u < td) {
-      const p = u / td, prev = state.scenes[i - 1], cur = state.scenes[i];
-      f = mixFx(prev.fx(u + state.durs[i - 1]), f, E.sine(p));
-      switch (it.trans) {
-        case 'dissolve':
-          op(cur.root, E.sine(p));
-          break;
-        case 'light':
-          op(cur.root, E.sine(p));
-          f.leak = Math.max(f.leak, 0.62 * Math.sin(Math.PI * p));
-          f.bloom += 0.22 * Math.pow(Math.sin(Math.PI * p), 2);
-          break;
-        case 'soft-wipe': {
-          const k = E.sine(p), dir = i % 2 ? 90 : 270;
-          setMask(cur.root, `linear-gradient(${dir}deg, #000 ${r2(k * 140 - 40)}%, transparent ${r2(k * 140)}%)`);
-          break;
-        }
-        case 'drift': {
-          const k = E.inOutCubic(p);
-          css(cur.root, 'transform', `translate3d(${r2((1 - k) * W * 0.06)}px,0,0)`);
-          op(cur.root, E.sine(p));
-          css(prev.root, 'transform', `translate3d(${r2(-k * W * 0.025)}px,0,0)`);
-          break;
-        }
-        case 'dip-light':
-          op(cur.root, p < 0.5 ? 0 : 1);
-          f.white = Math.max(f.white, p < 0.5 ? E.sine(p / 0.5) : 1 - E.sine((p - 0.5) / 0.5));
-          f.bloom += 0.15 * Math.sin(Math.PI * p);
-          break;
-        default: break;
-      }
+    const ucur = u - it.lead;
+    cur.render(ucur);
+    let uprev = 0;
+    if (prev) { uprev = t - state.starts[i - 1] - state.items[i - 1].lead; prev.render(uprev); }
+
+    let f = cur.fx(ucur);
+    const hv = { vis: 0, fly: null, focus: new Map(), beat: 0, shift: 0 };
+    const streams = [];
+    if (it.type === 'heartIntro') {
+      hv.vis = 1;
+      hv.fly = u;
+      hv.beat = bump(u, INTRO_DUR - 0.62, 0.08) + 0.6 * bump(u, INTRO_DUR - 0.4, 0.07);
     }
-    applyFx(f, t);
+    if (it.type === 'finale') {
+      hv.vis = 1;
+      hv.beat = bump(u, FIN.HB + 0.05, 0.09) + 0.6 * bump(u, FIN.HB + 0.3, 0.08);
+      hv.shift = E.inOutCubic(ramp(u, FIN.SA, FIN.SB));
+    }
+    sceneState(cur, 0);
+    op(cur.root, 1);
+    op(cur.tl, 1);
+    layersOn(cur);
+    let shards = false;
+    if (inTr) {
+      f = mixFx(prev.fx(uprev), f, E.sine(clamp(u / tr.td)));
+      if (tr.kind === 'heart' || tr.kind === 'collapse') shards = collapse(prev, state.items[i - 1], tr, u, hv, streams, i);
+      else { op(prev.root, 0); op(prev.tl, 0); }
+      if (tr.kind === 'heart' || tr.kind === 'expand') expand(cur, it, tr, u, hv);
+      const end = tr.cd + tr.hold + tr.ed;
+      if (tr.kind === 'heart') {
+        hv.vis = ramp(u, 0, 0.22) * (1 - ramp(u, end - 0.14, end));
+        if (tr.beat) hv.beat = bump(u, tr.cd + 0.25, 0.07) + 0.6 * bump(u, tr.cd + 0.47, 0.06);
+      } else if (tr.kind === 'expand') hv.vis = 1 - ramp(u, end - 0.14, end);
+      else if (tr.kind === 'collapse') hv.vis = ramp(u, 0, 0.22);
+    }
+    if (!shards) clearShards();
+    renderHeart(t, hv);
+    applyFx(f, t, streams);
   }
 
-  function applyFx(f, t) {
+  function applyFx(f, t, streams) {
     const o = n => String(r4(clamp(n)));
-    css(fxEls.grade, 'opacity', o(f.grade));
-    css(fxEls.fade, 'opacity', o(f.fade));
-    css(fxEls.glow, 'opacity', o(f.glow));
-    if (f.glow > 0.001) css(fxEls.glow, 'transform', `translate3d(${r2(f.glowX * W)}px,${r2(f.glowY * H)}px,0)`);
-    css(fxEls.rays, 'opacity', o(f.rays));
-    if (f.rays > 0.001) css(fxEls.rays, 'transform', `rotate(${r2(Math.sin(t * 0.1) * 3)}deg)`);
-    css(fxEls.leak, 'opacity', o(f.leak));
-    if (f.leak > 0.001) css(fxEls.leak, 'transform', `translate3d(${r2(Math.sin(t * 0.6) * W * 0.1)}px,${r2(Math.cos(t * 0.45) * H * 0.05)}px,0) rotate(${r2((t * 5) % 360)}deg)`);
-    css(fxEls.bloom, 'opacity', o(f.bloom));
-    css(fxEls.vignette, 'opacity', o(f.vignette));
-    css(fxEls.grain, 'opacity', o(f.grain));
-    if (f.grain > 0.001) {
+    if (LITE) { f.grade = 0; f.fade = 0; f.grain = 0; f.rays = 0; }
+    const lay = (el, v) => { css(el, 'display', v > 0.002 ? 'block' : 'none'); if (v > 0.002) css(el, 'opacity', o(v)); };
+    lay(fxEls.grade, f.grade);
+    lay(fxEls.fade, f.fade);
+    lay(fxEls.glow, f.glow);
+    if (f.glow > 0.002) css(fxEls.glow, 'transform', `translate3d(${r2(f.glowX * W)}px,${r2(f.glowY * H)}px,0)`);
+    lay(fxEls.rays, f.rays);
+    if (f.rays > 0.002) css(fxEls.rays, 'transform', `rotate(${r2(Math.sin(t * 0.1) * 3)}deg)`);
+    lay(fxEls.leak, f.leak);
+    if (f.leak > 0.002) css(fxEls.leak, 'transform', `translate3d(${r2(Math.sin(t * 0.6) * W * 0.1)}px,${r2(Math.cos(t * 0.45) * H * 0.05)}px,0) rotate(${r2((t * 5) % 360)}deg)`);
+    lay(fxEls.bloom, f.bloom);
+    lay(fxEls.vignette, f.vignette);
+    lay(fxEls.grain, f.grain);
+    if (f.grain > 0.002) {
       const s = Math.floor(t * 12);
       css(fxEls.grain, 'transform', `translate3d(${(s * 37) % 160 - 80}px,${(s * 61) % 160 - 80}px,0)`);
     }
-    css(fxEls.black, 'opacity', o(f.black));
-    css(fxEls.white, 'opacity', o(f.white));
-    particles.draw(t, f);
+    lay(fxEls.black, f.black);
+    lay(fxEls.white, f.white);
+    particles.draw(t, f, streams);
     const fp = { amount: clamp(f.fog), low: f.fogLow, warm: f.fogWarm };
     if (fog.ok) fog.draw(t, fp);
     else {
-      css(fxEls.fogCss, 'opacity', o(fp.amount * 0.9));
+      lay(fxEls.fogCss, fp.amount * 0.9);
       const [a, b] = fxEls.fogCss.children;
       css(a, 'transform', `translate3d(${r2(-(t * 14) % W)}px,${r2(60 * fp.low)}px,0)`);
       css(b, 'transform', `translate3d(${r2(((t * 9) % W) - W / 2)}px,${r2(120 * fp.low)}px,0) scaleY(-1)`);
@@ -1756,7 +2248,7 @@
      Playback
      --------------------------------------------------------------------- */
   function play() {
-    if (!state.scenes.length) return;
+    if (!state.items.length) return;
     state.playing = true;
     state.baseT = state.t;
     state.baseNow = performance.now();
@@ -1777,7 +2269,9 @@
     const T = state.total;
     state.t = ((t % T) + T) % T;
     state.lastItem = itemAt(state.t);
+    ensureWindow(state.lastItem);
     if (state.playing) { state.baseT = state.t; state.baseNow = performance.now(); }
+    else [350, 1200, 3000].forEach(ms => setTimeout(() => { if (!state.playing) state.dirty = true; }, ms));   // paused: redraw as photos arrive
     audio.onSeek(state.t, state.playing);
     state.dirty = true;
   }
@@ -1798,7 +2292,7 @@
       let t = state.baseT + (now - state.baseNow) / 1000;
       let wrapped = false;
       if (t >= state.total) {
-        if (state.recording) {                               // the film is over: stop the recording on black
+        if (state.recording) {                               // the film is over: stop the recording on light
           state.t = state.total - 0.001;
           renderAt(state.t);
           finishRecording();
@@ -1814,8 +2308,8 @@
       if (!wrapped) for (const c of state.cues) { if (c.t > t) break; if (prevT < c.t) c.fn(); }
       const ii = itemAt(t);
       if (ii !== state.lastItem) {
-        if (ii === state.lastItem + 1 && state.items[ii].trans === 'dip-light') audio.air();
         state.lastItem = ii;
+        ensureWindow(ii);
         updateUI();
       }
       state.dirty = true;
@@ -1829,37 +2323,54 @@
   }
 
   /* =====================================================================
-     SOUND — a gentle piano and music-box score, mountain air, sound design
+     SOUND — an upbeat, sparkly score (108 BPM, D – A – Bm – G): bouncy bass,
+     kick, claps and hats, marimba-like plucks and a glockenspiel hook with
+     echo. It follows the film — gentle in the intro and at night, big above
+     the clouds and at the finale — with playful sound design on top.
      ===================================================================== */
   const audio = (() => {
-    let ctx = null, out = null, ambient = null, score = null, sfx = null, verbIn = null, verbOut = null;
-    let padFilter = null, noiseBuf = null;
+    let ctx = null, out = null, ambient = null, musBus = null, drumBus = null, sfx = null, verbIn = null, echoIn = null;
+    let padFilter = null, padGain = null, padLevel = 0.04, noiseBuf = null, hasPan = false;
     const padOsc = [];
-    let music = null, musicUrl = '';
-    let volume = 0.8, muted = false, scoreOn = true, lastTick = 0, lastBeat = null;
-    const BEAT = 60 / 72;
-    // D – A – Bm – G, eight beats each: bass, pad voicing, arpeggio tones
+    let track = null, trackUrl = '';
+    let volume = 0.8, muted = false, scoreOn = true, lastTick = 0, nextStep = null;
+    const BPM = 108, BEAT = 60 / BPM, STEP = BEAT / 4;
+    const mf = m => 440 * Math.pow(2, (m - 69) / 12);
     const PROG = [
-      { bass: 146.83, pad: [146.83, 220.0, 293.66, 369.99], arp: [293.66, 369.99, 440.0, 587.33, 739.99] },
-      { bass: 110.0, pad: [110.0, 164.81, 277.18, 329.63], arp: [277.18, 329.63, 440.0, 554.37, 659.25] },
-      { bass: 123.47, pad: [123.47, 185.0, 246.94, 293.66], arp: [293.66, 369.99, 493.88, 587.33, 739.99] },
-      { bass: 98.0, pad: [98.0, 146.83, 196.0, 246.94], arp: [293.66, 392.0, 493.88, 587.33, 783.99] },
+      { root: 38, pad: [50, 57, 62, 66], arp: [62, 66, 69, 74, 78] },   // D
+      { root: 33, pad: [45, 52, 61, 64], arp: [61, 64, 69, 73, 76] },   // A
+      { root: 35, pad: [47, 54, 59, 62], arp: [62, 66, 71, 74, 78] },   // Bm
+      { root: 31, pad: [43, 50, 55, 59], arp: [62, 67, 71, 74, 79] },   // G
     ];
     const ARP = [0, 2, 1, 3, 2, 4, 3, 1];
-    const MEL = [[4, 3, 2], [3, 4, 2], [4, 2, 3], [2, 3, 4]];
+    const MEL = [                                                      // glockenspiel hook, one bar per chord
+      [[0, 74], [2, 78], [4, 81], [6, 78], [8, 76], [10, 74], [12, 78], [14, 81]],
+      [[0, 76], [2, 81], [4, 85], [6, 81], [8, 78], [10, 76], [12, 73], [14, 76]],
+      [[0, 78], [2, 74], [4, 78], [6, 83], [8, 81], [10, 78], [12, 74], [14, 78]],
+      [[0, 79], [2, 83], [4, 86], [6, 83], [8, 81], [10, 79], [12, 78], [14, 76]],
+    ];
+    const PENTA = [74, 76, 78, 81, 83, 86, 88, 90, 93, 95];
+    const LV = {
+      intro: { kick: 0, clap: 0, hat: 0.35, shaker: 0.45, bass: 0.55, pluck: 0.85, bell: 0, pad: 1 },
+      chill: { kick: 0, clap: 0.45, hat: 0.45, shaker: 0.5, bass: 0.7, pluck: 0.75, bell: 0.7, pad: 1, sparse: true },
+      groove: { kick: 0.85, clap: 0.8, hat: 0.7, shaker: 0.45, bass: 0.9, pluck: 0.8, bell: 0.6, pad: 0.85, sparse: true },
+      big: { kick: 1, clap: 0.9, hat: 0.8, shaker: 0.5, bass: 1, pluck: 0.9, bell: 1, pad: 0.9, bounce: true },
+      outro: { kick: 0, clap: 0, hat: 0, shaker: 0.25, bass: 0.4, pluck: 0.6, bell: 0.8, pad: 1, sparse: true },
+    };
     const vol = () => (muted ? 0 : volume);
     const live = () => !!ctx && ctx.state === 'running';
-    const bed = () => !music;                                // built-in sound only without uploaded music
-    const scoreEnv = t => E.sine(ramp(t, state.scoreStart - 0.3, state.scoreStart + 2.5)) * (1 - E.sine(ramp(t, state.total - 5, state.total - 0.5)));
-    const musicEnv = t => E.sine(ramp(t, 0, 1.5)) * (1 - E.sine(ramp(t, state.total - 5, state.total - 0.5)));
+    const bed = () => !track;                                // built-in sound only without uploaded music
+    const scoreEnv = t => E.sine(ramp(t, state.scoreStart - 0.05, state.scoreStart + 1.2)) * (1 - E.sine(ramp(t, state.total - 4.5, state.total - 0.4)));
+    const trackEnv = t => E.sine(ramp(t, 0, 1.5)) * (1 - E.sine(ramp(t, state.total - 5, state.total - 0.5)));
 
     function gainTo(dest, v) { const g = ctx.createGain(); g.gain.value = v; g.connect(dest); return g; }
+    function panTo(dest, p) { if (!hasPan || !p) return dest; const n = ctx.createStereoPanner(); n.pan.value = p; n.connect(dest); return n; }
     function makeImpulse(sec) {
       const len = Math.floor(ctx.sampleRate * sec);
       const buf = ctx.createBuffer(2, len, ctx.sampleRate);
       for (let c = 0; c < 2; c++) {
         const d = buf.getChannelData(c);
-        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.4);
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2);
       }
       return buf;
     }
@@ -1868,37 +2379,44 @@
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       ctx = new AC();
-      out = ctx.createDynamicsCompressor();
-      out.threshold.value = -16; out.knee.value = 12; out.ratio.value = 3; out.attack.value = 0.01; out.release.value = 0.25;
-      out.connect(ctx.destination);
+      hasPan = typeof ctx.createStereoPanner === 'function';
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.value = -14; comp.knee.value = 10; comp.ratio.value = 3.5; comp.attack.value = 0.006; comp.release.value = 0.2;
+      out = ctx.createGain();
+      out.connect(comp);
+      comp.connect(ctx.destination);
       ambient = gainTo(out, 0);
-      score = gainTo(out, 0);
-      sfx = gainTo(out, vol());
+      musBus = gainTo(out, 0);
+      drumBus = gainTo(musBus, 0.9);
+      sfx = gainTo(out, 0);
       verbIn = ctx.createConvolver();
-      verbIn.buffer = makeImpulse(3.8);
-      verbOut = gainTo(out, vol() * 0.55);
-      verbIn.connect(verbOut);
+      verbIn.buffer = makeImpulse(2.6);
+      verbIn.connect(gainTo(out, 0.4));
+      const dl = ctx.createDelay(1.0);
+      dl.delayTime.value = BEAT * 0.75;
+      const fb = ctx.createGain();
+      fb.gain.value = 0.32;
+      echoIn = ctx.createGain();
+      echoIn.connect(dl);
+      dl.connect(fb);
+      fb.connect(dl);
+      dl.connect(gainTo(musBus, 0.25));
       padFilter = ctx.createBiquadFilter();
-      padFilter.type = 'lowpass'; padFilter.frequency.value = 820; padFilter.Q.value = 0.4;
-      const padGain = ctx.createGain();
-      padGain.gain.value = 0.05;
+      padFilter.type = 'lowpass'; padFilter.frequency.value = 1100; padFilter.Q.value = 0.4;
+      padGain = ctx.createGain();
+      padGain.gain.value = 0;
       padFilter.connect(padGain);
-      padGain.connect(score);
+      padGain.connect(musBus);
       padGain.connect(verbIn);
-      PROG[0].pad.forEach((f, i) => {
+      PROG[0].pad.forEach((m, i) => {
         const o = ctx.createOscillator();
         o.type = i === 0 ? 'sine' : 'triangle';
-        o.frequency.value = f;
-        o.detune.value = i % 2 ? 4 : -4;
+        o.frequency.value = mf(m);
+        o.detune.value = i % 2 ? 5 : -5;
         const g = ctx.createGain();
         g.gain.value = [0.55, 0.32, 0.28, 0.2][i];
-        const lfo = ctx.createOscillator();
-        lfo.frequency.value = 0.06 + i * 0.023;
-        const lg = ctx.createGain();
-        lg.gain.value = g.gain.value * 0.35;
-        lfo.connect(lg).connect(g.gain);
         o.connect(g).connect(padFilter);
-        o.start(); lfo.start();
+        o.start();
         padOsc.push(o);
       });
       noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
@@ -1914,52 +2432,149 @@
       wind.connect(bp).connect(gainTo(ambient, 0.03));
       wind.start(); wl.start();
     }
-    function setPad(chord) {
-      const now = ctx.currentTime;
-      PROG[chord].pad.forEach((f, i) => padOsc[i].frequency.setTargetAtTime(f, now, 0.5));
+
+    /* instruments — `at` is an absolute AudioContext time */
+    function env(at, peak, dur, attack = 0.003) {
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), at + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      return g;
     }
-    // Felt-piano-like voice: triangle fundamental + soft harmonics, fast attack, long decay.
-    function note(f, g, decay, when = 0, dest = score) {
-      const t0 = ctx.currentTime + when;
+    function noiseHit(at, o) {
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBuf;
+      const fl = ctx.createBiquadFilter();
+      fl.type = o.type || 'bandpass'; fl.frequency.value = o.f || 1500; fl.Q.value = o.q || 0.8;
+      const a = env(at, o.peak, o.dur, 0.002);
+      src.connect(fl).connect(a);
+      a.connect(panTo(o.dest || drumBus, o.pan || 0));
+      if (o.verb) a.connect(gainTo(verbIn, o.verb));
+      src.start(at, Math.random() * Math.max(0.01, 2.9 - o.dur), o.dur + 0.05);
+    }
+    function kick(at, g) {
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(160, at);
+      o.frequency.exponentialRampToValueAtTime(46, at + 0.12);
+      const a = env(at, 0.95 * g, 0.4);
+      o.connect(a).connect(drumBus);
+      o.start(at); o.stop(at + 0.42);
+      const c = ctx.createOscillator();
+      c.type = 'triangle';
+      c.frequency.setValueAtTime(900, at);
+      c.frequency.exponentialRampToValueAtTime(200, at + 0.02);
+      const ca = env(at, 0.22 * g, 0.03, 0.001);
+      c.connect(ca).connect(drumBus);
+      c.start(at); c.stop(at + 0.05);
+      const pg = padGain.gain;                                // the pad breathes with the kick
+      pg.cancelScheduledValues(at);
+      pg.setTargetAtTime(padLevel * 0.3, at, 0.006);
+      pg.setTargetAtTime(padLevel, at + 0.07, 0.14);
+    }
+    function clap(at, g) {
+      [0, 0.011, 0.023].forEach(d => noiseHit(at + d, { f: 1600, q: 0.9, peak: 0.28 * g, dur: 0.014 }));
+      noiseHit(at + 0.034, { f: 1300, q: 0.7, peak: 0.24 * g, dur: 0.17, verb: 0.45 });
+    }
+    function hat(at, g, open) { noiseHit(at, { type: 'highpass', f: 7600, q: 0.5, peak: (open ? 0.07 : 0.09) * g, dur: open ? 0.13 : 0.035, pan: open ? 0.25 : -0.2 }); }
+    function shaker(at, g) { noiseHit(at, { f: 5600, q: 1.4, peak: 0.05 * g, dur: 0.05, pan: 0.35 }); }
+    function bassNote(at, f, g, accent) {
       const lp = ctx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(3400, t0);
-      lp.frequency.exponentialRampToValueAtTime(900, t0 + decay);
-      const env = ctx.createGain();
-      env.gain.setValueAtTime(0.0001, t0);
-      env.gain.exponentialRampToValueAtTime(g, t0 + 0.006);
-      env.gain.exponentialRampToValueAtTime(0.0001, t0 + decay);
-      lp.connect(env);
-      env.connect(dest);
-      env.connect(verbIn);
-      [[1, 'triangle', 1], [2, 'sine', 0.3], [3, 'sine', 0.09], [4.02, 'sine', 0.045]].forEach(([m, type, a]) => {
+      lp.type = 'lowpass'; lp.Q.value = 3;
+      lp.frequency.setValueAtTime(accent ? 1500 : 1000, at);
+      lp.frequency.exponentialRampToValueAtTime(320, at + 0.22);
+      const a = env(at, 0.3 * g, 0.26, 0.008);
+      lp.connect(a).connect(musBus);
+      [['sawtooth', f, 0.3], ['triangle', f, 0.6], ['sine', f / 2, 0.75]].forEach(([type, fr, v]) => {
+        const o = ctx.createOscillator();
+        o.type = type; o.frequency.value = fr;
+        const og = ctx.createGain();
+        og.gain.value = v;
+        o.connect(og).connect(lp);
+        o.start(at); o.stop(at + 0.3);
+      });
+    }
+    function pluck(at, f, g, pan) {
+      const a = env(at, 0.085 * g, 0.42);
+      a.connect(panTo(musBus, pan));
+      a.connect(gainTo(verbIn, 0.25));
+      (LITE ? [[1, 'sine', 1], [2, 'triangle', 0.22]] : [[1, 'sine', 1], [2, 'triangle', 0.22], [4, 'sine', 0.16]]).forEach(([m, type, v]) => {
         const o = ctx.createOscillator();
         o.type = type; o.frequency.value = f * m;
         const og = ctx.createGain();
-        og.gain.value = a;
-        o.connect(og); og.connect(lp);
-        o.start(t0); o.stop(t0 + decay + 0.05);
+        og.gain.setValueAtTime(v, at);
+        if (m > 1) og.gain.exponentialRampToValueAtTime(0.0001, at + 0.12);
+        o.connect(og).connect(a);
+        o.start(at); o.stop(at + 0.45);
       });
     }
-    // Music-box / celesta voice.
-    function bell(f, g, when = 0, dest = score) {
-      const t0 = ctx.currentTime + when;
-      const env = ctx.createGain();
-      env.gain.setValueAtTime(0.0001, t0);
-      env.gain.exponentialRampToValueAtTime(g, t0 + 0.004);
-      env.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.8);
-      env.connect(dest);
-      env.connect(verbIn);
-      [[1, 1], [2.0, 0.22], [3.0, 0.1], [5.04, 0.035]].forEach(([m, a]) => {
+    function glock(at, f, g, dest) {
+      const a = env(at, g, 1.4, 0.002);
+      a.connect(dest || musBus);
+      a.connect(echoIn);
+      a.connect(gainTo(verbIn, 0.4));
+      [[1, 1], [2.76, 0.22], [5.4, 0.07]].forEach(([m, v]) => {
         const o = ctx.createOscillator();
         o.type = 'sine'; o.frequency.value = f * m;
         const og = ctx.createGain();
-        og.gain.value = a;
-        o.connect(og).connect(env);
-        o.start(t0); o.stop(t0 + 1.9);
+        og.gain.setValueAtTime(v, at);
+        if (m > 1) og.gain.exponentialRampToValueAtTime(0.0001, at + 0.5);
+        o.connect(og).connect(a);
+        o.start(at); o.stop(at + 1.45);
       });
     }
-    function noiseSweep(dur, f0, f1, peak, o = {}) {
+    function setPad(ci, at, lvl) {
+      padLevel = 0.042 * lvl;
+      PROG[ci].pad.forEach((m, k) => padOsc[k].frequency.setTargetAtTime(mf(m), at, 0.05));
+      padGain.gain.setTargetAtTime(padLevel, at, 0.25);
+    }
+
+    /* the score follows the film */
+    function levelAt(ft) {
+      if (!state.items.length) return LV.intro;
+      const i = itemAt(ft), it = state.items[i], u = ft - state.starts[i];
+      if (it.type === 'opener' || it.type === 'heartIntro') return LV.intro;
+      if (it.type === 'finale') return u < FIN.HB ? LV.intro : u < it.dur - 6 ? LV.big : LV.outro;
+      const m = it.def && it.def.mood;
+      return m === 'night' ? LV.chill : m === 'mist' ? LV.big : LV.groove;
+    }
+    function playStep(s, at, ft) {
+      const L = levelAt(ft);
+      const bar = Math.floor(s / 16), st = s % 16, ci = bar % 4, C = PROG[ci];
+      if (st === 0) setPad(ci, at, L.pad);
+      if (L.kick && (st === 0 || st === 8 || (L.bounce && st === 10))) kick(at, L.kick);
+      if (L.clap && (st === 4 || st === 12)) clap(at, L.clap);
+      if (L.clap && bar % 4 === 3 && st >= 13) clap(at, L.clap * 0.5);
+      if (L.hat && st % 4 === 2) hat(at, L.hat, true);
+      else if (L.hat && st % 2 === 0) hat(at, L.hat * 0.6, false);
+      if (L.shaker && !LITE && st % 2 === 1) shaker(at, L.shaker);
+      if (L.bass && (st === 0 || st === 3 || st === 6 || st === 8 || st === 11 || st === 14)) {
+        bassNote(at, mf(C.root + 12 + (st === 6 ? 12 : st === 11 ? 7 : 0)), L.bass, st === 0 || st === 8);
+      }
+      if (L.pluck && st % 2 === 0) pluck(at, mf(C.arp[ARP[st / 2]]), L.pluck * (st % 4 === 0 ? 1 : 0.7), st % 4 === 0 ? -0.3 : 0.3);
+      if (L.bell) {
+        const nt = MEL[ci].find(x => x[0] === st);
+        if (nt && (!L.sparse || st % 4 === 0)) glock(at, mf(nt[1]), 0.05 * L.bell);
+      }
+    }
+    function scoreTick(t, playing) {
+      if (!live() || !playing || !scoreOn || !bed()) { nextStep = null; return; }
+      const rel = t - state.scoreStart;
+      if (nextStep === null || nextStep * STEP < rel - 0.25 || nextStep * STEP > rel + 1) nextStep = Math.max(0, Math.ceil(rel / STEP));
+      while (nextStep * STEP < rel + 0.12) {                   // look ahead 120 ms for steady timing
+        const ft = state.scoreStart + nextStep * STEP;
+        if (ft < state.total - 0.4) playStep(nextStep, ctx.currentTime + Math.max(0, nextStep * STEP - rel), ft);
+        nextStep++;
+      }
+    }
+    function syncTrack(t, playing) {
+      if (!track) return;
+      const dur = isFinite(track.duration) ? track.duration : Infinity;
+      if (!playing || t >= dur - 0.05) { if (!track.paused) track.pause(); return; }
+      if (Math.abs(track.currentTime - t) > 0.3) { try { track.currentTime = t; } catch (e) { /* not seekable yet */ } }
+      if (track.paused) track.play().catch(() => {});
+    }
+    function sweep(dur, f0, f1, peak, o = {}) {
       const t0 = ctx.currentTime;
       const at = o.peakAt || 0.6;
       const src = ctx.createBufferSource();
@@ -1973,82 +2588,67 @@
       g.gain.exponentialRampToValueAtTime(peak, t0 + dur * at);
       g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
       src.connect(bp).connect(g);
-      g.connect(sfx);
+      g.connect(panTo(sfx, o.pan || 0));
       if (o.verb) g.connect(verbIn);
       src.start(t0, Math.random() * 2);
       src.stop(t0 + dur + 0.05);
     }
-    function playBeat(b) {
-      const chord = Math.floor(b / 8) % PROG.length, step = b % 8, C = PROG[chord];
-      if (step === 0) { setPad(chord); note(C.bass, 0.11, 4.2); }
-      note(C.arp[ARP[step]], step === 0 ? 0.075 : 0.05, 2.8);
-      if (b >= 32 && (step === 0 || step === 3 || step === 6)) bell(C.arp[MEL[chord][step / 3]] * 2, 0.028, 0.02);
-      if (b >= 64 && (step === 2 || step === 6)) note(C.arp[(ARP[step] + 2) % 5] * 2, 0.02, 2.4, 0.45 * BEAT);
+    function boom(at, g) {
+      const o = ctx.createOscillator();
+      o.frequency.setValueAtTime(110, at);
+      o.frequency.exponentialRampToValueAtTime(32, at + 1.1);
+      const a = env(at, 0.7 * g, 2.6, 0.01);
+      o.connect(a).connect(sfx);
+      o.start(at); o.stop(at + 2.7);
     }
-    function scoreTick(t, playing) {
-      if (!live() || !playing || !scoreOn || !bed()) { lastBeat = null; return; }
-      const pos = (t - state.scoreStart) / BEAT, b = Math.floor(pos);
-      if (b < 0) { lastBeat = null; return; }
-      if (lastBeat === null || b < lastBeat || b > lastBeat + 2) {      // start, seek or loop: resync
-        lastBeat = b;
-        setPad(Math.floor(b / 8) % PROG.length);
-        if (pos - b < 0.15) playBeat(b);
-        return;
-      }
-      while (lastBeat < b) playBeat(++lastBeat);
-    }
-    function syncMusic(t, playing) {
-      if (!music) return;
-      const dur = isFinite(music.duration) ? music.duration : Infinity;
-      if (!playing || t >= dur - 0.05) { if (!music.paused) music.pause(); return; }
-      if (Math.abs(music.currentTime - t) > 0.3) { try { music.currentTime = t; } catch (e) { /* not seekable yet */ } }
-      if (music.paused) music.play().catch(() => {});
-    }
+    function crash(at, g) { noiseHit(at, { type: 'highpass', f: 4200, q: 0.4, peak: 0.12 * g, dur: 1.8, dest: sfx, verb: 0.5 }); }
     const sfxOk = () => live() && bed() && vol() > 0;
+    const now = () => ctx.currentTime + 0.005;
 
     return {
       get running() { return live(); },
       unlock() {
         ensure();
         if (ctx && ctx.state !== 'running') ctx.resume().then(updateSoundHint, () => {});
-        if (music && state.playing) syncMusic(state.t, true);
+        if (track && state.playing) syncTrack(state.t, true);
         updateSoundHint();
       },
-      onPlay(t) { syncMusic(t, true); lastBeat = null; this.tick(t, true, true); },
+      onPlay(t) { syncTrack(t, true); nextStep = null; this.tick(t, true, true); },
       onPause() {
-        if (music && !music.paused) music.pause();
+        nextStep = null;
+        if (track && !track.paused) track.pause();
         if (ctx) {
-          const now = ctx.currentTime;
-          [ambient, score, sfx].forEach(g => g.gain.setTargetAtTime(0, now, 0.12));
+          const ct = ctx.currentTime;
+          [ambient, musBus, sfx].forEach(g => g.gain.setTargetAtTime(0, ct, 0.08));
         }
       },
       onSeek(t, playing) {
-        lastBeat = null;
-        if (!music) return;
-        const dur = isFinite(music.duration) ? music.duration : Infinity;
-        if (t < dur) { try { music.currentTime = t; } catch (e) { /* ignore */ } }
-        syncMusic(t, playing);
+        nextStep = null;
+        if (!track) return;
+        const dur = isFinite(track.duration) ? track.duration : Infinity;
+        if (t < dur) { try { track.currentTime = t; } catch (e) { /* ignore */ } }
+        syncTrack(t, playing);
       },
       tick(t, playing, force) {
         scoreTick(t, playing);
-        const now = performance.now();
-        if (!force && now - lastTick < 100) return;
-        lastTick = now;
-        if (music) {
-          music.volume = clamp(vol() * musicEnv(t));
-          if (playing) syncMusic(t, true);
+        const nowMs = performance.now();
+        if (!force && nowMs - lastTick < 100) return;
+        lastTick = nowMs;
+        if (track) {
+          track.volume = clamp(vol() * trackEnv(t));
+          if (playing) syncTrack(t, true);
         }
         if (ctx) {
-          const ct = ctx.currentTime, e = scoreEnv(t), on = playing && bed();
-          ambient.gain.setTargetAtTime(on ? vol() * 0.7 * Math.max(e, 0.25) : 0, ct, 0.4);
-          score.gain.setTargetAtTime(on && scoreOn ? vol() * 0.85 * e : 0, ct, 0.3);
+          const ct = ctx.currentTime, on = playing && bed();
+          ambient.gain.setTargetAtTime(on ? vol() * 0.35 : 0, ct, 0.4);
+          musBus.gain.setTargetAtTime(on && scoreOn ? vol() * 0.95 * scoreEnv(t) : 0, ct, 0.15);
           sfx.gain.setTargetAtTime(on ? vol() : 0, ct, 0.05);
-          verbOut.gain.setTargetAtTime(vol() * 0.55, ct, 0.2);
         }
       },
       // cold-open design
-      whoosh(d = 1.4, g = 0.08) { if (sfxOk()) noiseSweep(d, 240, 1800, g, { peakAt: 0.55, verb: true }); },
-      ping(f, g) { if (sfxOk()) note(f, g, 3.4, 0, sfx); },
+      sparkle() { if (sfxOk()) { const at = now(); PENTA.forEach((m, i) => glock(at + i * 0.07, mf(m + 12), 0.012 + 0.002 * i, sfx)); sweep(1.4, 900, 5200, 0.04, { peakAt: 0.7, verb: true }); } },
+      whoosh(d = 1.4, g = 0.08) { if (sfxOk()) sweep(d, 240, 1800, g, { peakAt: 0.55, verb: true }); },
+      ping(f, g) { if (sfxOk()) glock(now(), f, g, sfx); },
       drone(d) {
         if (!sfxOk()) return;
         const t0 = ctx.currentTime;
@@ -2065,7 +2665,7 @@
       },
       riser(d) {
         if (!sfxOk()) return;
-        noiseSweep(d, 300, 6500, 0.13, { peakAt: 0.97 });
+        sweep(d, 300, 6500, 0.13, { peakAt: 0.97 });
         const t0 = ctx.currentTime;
         const o = ctx.createOscillator();
         o.frequency.setValueAtTime(70, t0);
@@ -2079,69 +2679,98 @@
       },
       hit() {
         if (!sfxOk()) return;
-        const t0 = ctx.currentTime;
-        const o = ctx.createOscillator();
-        o.frequency.setValueAtTime(120, t0);
-        o.frequency.exponentialRampToValueAtTime(34, t0 + 1.2);
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(0.0001, t0);
-        g.gain.exponentialRampToValueAtTime(0.7, t0 + 0.012);
-        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 3.2);
-        o.connect(g).connect(sfx);
-        o.start(t0); o.stop(t0 + 3.3);
-        noiseSweep(0.9, 1800, 260, 0.12, { peakAt: 0.04, type: 'lowpass', q: 0.7, verb: true });
-        note(146.83, 0.1, 5.5, 0, sfx);
-        note(587.33, 0.045, 5, 0.02, sfx);
-        note(880.0, 0.035, 5, 0.05, sfx);
-        note(1174.66, 0.025, 5, 0.09, sfx);
+        const at = now();
+        boom(at, 1);
+        crash(at, 1.1);
+        [587.33, 880, 1174.66, 1479.98].forEach((f, i) => glock(at + i * 0.04, f, 0.035, sfx));
       },
-      // montage cut: a click and a soft thump
       cut(level) {
         if (!sfxOk()) return;
-        const t0 = ctx.currentTime;
-        const src = ctx.createBufferSource();
-        src.buffer = noiseBuf;
-        const hp = ctx.createBiquadFilter();
-        hp.type = 'highpass'; hp.frequency.value = 2600;
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(0.0001, t0);
-        g.gain.exponentialRampToValueAtTime(0.1 * level, t0 + 0.002);
-        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.07);
-        src.connect(hp).connect(g).connect(sfx);
-        src.start(t0, Math.random() * 2, 0.1);
+        const at = now();
+        noiseHit(at, { type: 'highpass', f: 2600, q: 0.5, peak: 0.1 * level, dur: 0.07, dest: sfx });
         const o = ctx.createOscillator();
-        o.frequency.setValueAtTime(95, t0);
-        o.frequency.exponentialRampToValueAtTime(45, t0 + 0.18);
-        const og = ctx.createGain();
-        og.gain.setValueAtTime(0.0001, t0);
-        og.gain.exponentialRampToValueAtTime(0.32 * level, t0 + 0.006);
-        og.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.34);
-        o.connect(og).connect(sfx);
-        o.start(t0); o.stop(t0 + 0.4);
+        o.frequency.setValueAtTime(95, at);
+        o.frequency.exponentialRampToValueAtTime(45, at + 0.18);
+        const a = env(at, 0.32 * level, 0.34, 0.006);
+        o.connect(a).connect(sfx);
+        o.start(at); o.stop(at + 0.4);
       },
-      // warm, playful details
-      pop() { if (sfxOk()) { bell(1567.98, 0.024, 0, sfx); bell(2093.0, 0.014, 0.07, sfx); } },
-      twinkle() { if (sfxOk()) { bell(2349.32, 0.012, 0, sfx); bell(3135.96, 0.008, 0.09, sfx); } },
-      chime() {
+      // playful details
+      pop() {
         if (!sfxOk()) return;
-        [880, 1108.73, 1318.51, 1760].forEach((f, i) => bell(f, 0.03, i * 0.07, sfx));
-        note(146.83, 0.08, 4.5, 0, sfx);
+        const at = now();
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(380, at);
+        o.frequency.exponentialRampToValueAtTime(1250, at + 0.08);
+        const a = env(at, 0.07, 0.12, 0.004);
+        o.connect(a).connect(sfx);
+        o.start(at); o.stop(at + 0.14);
+        glock(at + 0.05, 1567.98, 0.02, sfx);
       },
-      air() { if (sfxOk()) noiseSweep(1.8, 300, 1400, 0.035, { peakAt: 0.5, verb: true }); },
+      twinkle() { if (sfxOk()) { const at = now(); glock(at, 2349.32, 0.014, sfx); glock(at + 0.09, 3135.96, 0.009, sfx); } },
+      ting(k) { if (sfxOk()) glock(now(), mf(PENTA[(k * 3) % PENTA.length]), 0.02, sfx); },
+      chime() { if (sfxOk()) { const at = now(); [880, 1108.73, 1318.51, 1760].forEach((f, i) => glock(at + i * 0.07, f, 0.03, sfx)); } },
+      gliss() { if (sfxOk()) { const at = now(); PENTA.slice(0, 8).forEach((m, i) => glock(at + i * 0.045, mf(m + 12), 0.016 * (1 - i / 10), sfx)); } },
+      fold(open) { if (sfxOk()) sweep(0.45, open ? 420 : 2400, open ? 2600 : 380, 0.035, { peakAt: 0.7, pan: open ? 0.2 : -0.2 }); },
+      // each way of returning to the heart has its own little sound
+      collapse(style) {
+        if (!sfxOk()) return;
+        const at = now();
+        if (style === 'spin') {
+          sweep(1.0, 320, 2400, 0.035, { peakAt: 0.45, pan: -0.35 });
+          sweep(1.0, 2400, 420, 0.03, { peakAt: 0.6, pan: 0.35 });
+        } else if (style === 'fade') {
+          PENTA.slice(2).reverse().forEach((m, i) => glock(at + i * 0.1, mf(m + 12), 0.011 * (1 - i / 10), sfx));
+          sweep(1.2, 5200, 1400, 0.022, { peakAt: 0.3, type: 'highpass', q: 0.5 });
+        } else if (style === 'scatter') {
+          noiseHit(at, { type: 'highpass', f: 5200, q: 0.5, peak: 0.07, dur: 0.45, dest: sfx, verb: 0.5 });
+          [0, 1, 2, 3, 4, 5, 6].forEach(i => glock(at + 0.02 + i * 0.04, mf(PENTA[(i * 3 + 2) % PENTA.length] + 12), 0.012, sfx));
+          sweep(1.1, 2800, 420, 0.03, { peakAt: 0.55 });
+        } else sweep(0.6, 2400, 380, 0.035, { peakAt: 0.7, pan: -0.2 });
+      },
+      heartbeat() {
+        if (!sfxOk()) return;
+        const at = now();
+        [0, 0.22].forEach((d, i) => {
+          const o = ctx.createOscillator();
+          o.frequency.setValueAtTime(78, at + d);
+          o.frequency.exponentialRampToValueAtTime(42, at + d + 0.12);
+          const a = env(at + d, i ? 0.32 : 0.45, 0.28, 0.006);
+          o.connect(a).connect(sfx);
+          o.start(at + d); o.stop(at + d + 0.3);
+        });
+      },
+      roll(d) {
+        if (!sfxOk()) return;
+        const at = now();
+        for (let k = 0; k < 18; k++) {
+          const x = k / 18, tt = at + d * (1 - Math.pow(1 - x, 1.7));
+          noiseHit(tt, { f: 1400, q: 0.8, peak: 0.05 + 0.14 * x, dur: 0.05, dest: sfx });
+        }
+        sweep(d, 500, 7000, 0.08, { peakAt: 0.98 });
+      },
+      impact(big) {
+        if (!sfxOk()) return;
+        const at = now();
+        boom(at, big ? 1 : 0.6);
+        crash(at, big ? 1.2 : 0.7);
+        if (big) [587.33, 880, 1174.66, 1479.98, 1760].forEach((f, i) => glock(at + i * 0.05, f, 0.03, sfx));
+      },
       setMusic(file) {
         this.clearMusic();
-        musicUrl = URL.createObjectURL(file);
-        music = new Audio();
-        music.preload = 'auto';
-        music.src = musicUrl;
-        music.volume = 0;
-        music.addEventListener('loadedmetadata', () => { if (state.playing) syncMusic(state.t, true); });
-        music.addEventListener('error', () => { toast('ไฟล์เสียงนี้เล่นไม่ได้ กรุณาใช้ MP3 หรือ WAV'); this.clearMusic(); updateMusicUI(''); });
+        trackUrl = URL.createObjectURL(file);
+        track = new Audio();
+        track.preload = 'auto';
+        track.src = trackUrl;
+        track.volume = 0;
+        track.addEventListener('loadedmetadata', () => { if (state.playing) syncTrack(state.t, true); });
+        track.addEventListener('error', () => { toast('ไฟล์เสียงนี้เล่นไม่ได้ กรุณาใช้ MP3 หรือ WAV'); this.clearMusic(); updateMusicUI(''); });
       },
       clearMusic() {
-        if (music) { music.pause(); music.removeAttribute('src'); music.load(); }
-        if (musicUrl) URL.revokeObjectURL(musicUrl);
-        music = null; musicUrl = '';
+        if (track) { track.pause(); track.removeAttribute('src'); track.load(); }
+        if (trackUrl) URL.revokeObjectURL(trackUrl);
+        track = null; trackUrl = '';
       },
       setVolume(v) { volume = v; this.tick(state.t, state.playing, true); },
       toggleMute() { muted = !muted; this.tick(state.t, state.playing, true); return muted; },
@@ -2199,7 +2828,7 @@
     pause();
     seek(0);
     state.lastItem = -1;
-    // let the drawer slide away, then roll camera and film together from black
+    // let the drawer slide away, then roll camera and film together
     setTimeout(() => { rec.start(1000); setTimeout(play, 250); }, 900);
   }
   function finishRecording() {
@@ -2238,17 +2867,18 @@
     }
   }
 
-  // Resize → rescale immediately; re-layout when the screen's shape really changes.
+  // Resize → rescale immediately; re-layout only when the screen really
+  // changes shape (rotation), not when a phone's toolbar slides in and out.
   let resizeTimer = 0;
   function onResize() {
     applyScale();
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       const d = computeDims();
-      if (Math.abs(d.w / d.h - W / H) / (W / H) > 0.03) {
-        if (state.ready) rebuild(false); else setGeometry();
-      }
-    }, 200);
+      const flipped = (d.w > d.h) !== (W > H);
+      const change = Math.abs(d.w / d.h - W / H) / (W / H);
+      if (flipped || change > (LITE ? 0.25 : 0.06)) { if (state.ready) rebuild(false); else setGeometry(); }
+    }, 250);
   }
   new ResizeObserver(onResize).observe(stage);
   addEventListener('resize', onResize);
@@ -2344,7 +2974,7 @@
     el.title = p.name;
     const im = imgEl(p);
     im.loading = 'lazy';
-    im.className = 'nodecode';
+    im.decoding = 'async';
     el.append(im, h('span', 'thumb__n', p.num));
     return el;
   }
@@ -2387,7 +3017,7 @@
       gallery.querySelectorAll('.thumb.is-playing').forEach(el => el.classList.remove('is-playing'));
       const it = state.items[i];
       if (!it) return;
-      const list = it.pos || (it.type === 'opener' || it.type === 'finale' ? [state.keyPos] : []);
+      const list = it.type === 'opener' || it.type === 'finale' || it.type === 'heartIntro' ? [state.keyPos] : it.pos || [];
       list.forEach(p => { const el = gallery.querySelector(`.thumb[data-pos="${p}"]`); if (el) el.classList.add('is-playing'); });
     }
   }
@@ -2473,7 +3103,7 @@
     const i = state.photoItem[pos];
     if (i == null || i < 0) return;
     const it = state.items[i];
-    const off = it.type === 'opener' ? it.titleAt + 0.4 : it.chapter ? contentAt(it) + 1.2 : 0.6;
+    const off = it.type === 'opener' ? it.titleAt + 0.4 : it.lead + (it.chapter ? contentAt(it) + 1.2 : 0.6);
     seek(state.starts[i] + off);
   }
 
@@ -2532,10 +3162,13 @@
     const m = /t=(\d+(?:\.\d+)?)/.exec(location.hash);     // index.html#t=45 opens at 00:45
     seek(m ? +m[1] : 0);
     state.lastItem = itemAt(state.t);
+    if (/debug/.test(location.hash)) {                     // index.html#debug prints the timeline
+      console.log('TIMELINE ' + JSON.stringify(state.items.map((it, i) => [i, it.type, r2(state.starts[i]), r2(it.dur), it.tr.kind, it.tr.out || '', (it.photos || []).map(p => p.num).join('+')])));
+    }
     audio.unlock();
     if (!(m && /pause/.test(location.hash))) {
       app.classList.add('is-idle');
-      setTimeout(play, m ? 0 : 650);                          // roll once the loader has faded to black
+      setTimeout(play, m ? 0 : 650);                          // roll once the loader has faded away
     }
     updateSoundHint();
     setTimeout(updateSoundHint, 500);
